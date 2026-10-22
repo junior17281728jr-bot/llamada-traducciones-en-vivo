@@ -1,5 +1,13 @@
 /**
- * @tw/server: bridge server (call channels, call sessions, operator WebSocket, HTTP API, stores).
- * Placeholder from the Base phase: the implementation arrives in the next phase.
+ * @tw/server: servidor puente (canales de llamada, sesiones de llamada, operadores por WebSocket,
+ * historial, grabaciones, claves y ajustes).
  */
 export const SERVER_PACKAGE = '@tw/server' as const;
+
+export { createApplication, type Application, type ApplicationOverrides } from './application.js';
+export { CallManager, type CallManagerDeps } from './call-manager.js';
+export { CallSession, type OperatorLink } from './call-session.js';
+export { MockCallChannel, MockPhone, MockChannelCall } from './channel/mock-channel.js';
+export { ConfigError, loadConfig, type ServerConfig } from './config.js';
+export { createProviders, NotConfiguredError, type Providers } from './providers.js';
+export { createTelecomwayServer, type RunningServer } from './server.js';

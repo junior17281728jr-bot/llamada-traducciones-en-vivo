@@ -108,6 +108,14 @@ export class MockCallChannel implements CallChannel {
     return Promise.resolve(phone.receiveCall(number.trim()));
   }
 
+  /** Makes the simulated passenger of `callId` say `text` (used by the `debug.say` message). */
+  sayAsPassenger(callId: string, text: string, lang: string): boolean {
+    const phone = [...this.phones].find((candidate) => candidate.call?.id === callId && candidate.call.active);
+    if (!phone) return false;
+    phone.say(text, lang);
+    return true;
+  }
+
   /** Creates a simulated phone. The WebSocket simulator creates one per socket. */
   createPhone(): MockPhone {
     const phone = new MockPhone(this);

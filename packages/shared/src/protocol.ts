@@ -164,8 +164,17 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   }),
   /** Mutes the operator's microphone: nothing is translated or sent to the passenger while muted. */
   z.object({ type: z.literal('call.mute'), callId: CallIdSchema, muted: z.boolean() }),
-  /** Simulated mode only: injects `text` as if the passenger had said it in `lang`. */
-  z.object({ type: z.literal('debug.say'), text: z.string().min(1).max(2000), lang: LanguageCodeSchema }),
+  /**
+   * Simulated mode only: injects `text` as if it had been said in `lang`. By default the passenger
+   * says it; with `as: 'operator'` the server speaks it as the operator (synthetic audio), so the
+   * whole flow can be tried without a microphone.
+   */
+  z.object({
+    type: z.literal('debug.say'),
+    text: z.string().min(1).max(2000),
+    lang: LanguageCodeSchema,
+    as: z.enum(SPEAKERS).optional(),
+  }),
 ]);
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export type ClientMessageType = ClientMessage['type'];
