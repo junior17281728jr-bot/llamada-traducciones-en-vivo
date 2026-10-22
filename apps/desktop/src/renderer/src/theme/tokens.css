@@ -1,0 +1,145 @@
+/*
+ * Design tokens. Dark is the default; the light theme follows prefers-color-scheme, and
+ * <html data-theme="light|dark"> forces either one. Every text token reaches WCAG AA (4.5:1)
+ * on bg, surface and surface-raised; the test in tokens.test.ts checks it.
+ *
+ * Pasajero = blue (Okabe-Ito sky blue family), Operador = orange. The pair is chosen for
+ * colour-blind readers, and the UI never relies on colour alone: lanes also carry a text
+ * label and an icon.
+ */
+
+:root {
+  color-scheme: dark light;
+
+  /* Typography */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.625rem;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-bold: 650;
+
+  /* Spacing, radii, layout */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --gutter: 16px;
+  --focus-ring-width: 3px;
+  --lane-height: 96px;
+  --lane-height-compact: 64px;
+
+  /* Motion (zeroed under prefers-reduced-motion below) */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+
+  /* Colours: dark (default) */
+  --color-bg: #0b1220;
+  --color-surface: #121b2d;
+  --color-surface-raised: #1a2640;
+  --color-border: #34466a;
+  --color-text: #e8edf6;
+  --color-text-muted: #a8b5cc;
+  --color-accent: #b9a8ff;
+  --color-on-accent: #160f33;
+  --color-focus: #ffffff;
+  --color-scrim: rgba(3, 7, 15, 0.7);
+
+  --color-passenger: #56b4e9;
+  --color-passenger-soft: rgba(86, 180, 233, 0.14);
+  --color-operator: #f0a030;
+  --color-operator-soft: rgba(240, 160, 48, 0.14);
+
+  --color-ok: #4ade80;
+  --color-ok-soft: rgba(74, 222, 128, 0.14);
+  --color-warn: #f2d14b;
+  --color-warn-soft: rgba(242, 209, 75, 0.14);
+  --color-danger: #ff8a8a;
+  --color-danger-soft: rgba(255, 138, 138, 0.14);
+  --color-simulated: #d9a8ff;
+  --color-simulated-soft: rgba(217, 168, 255, 0.14);
+}
+
+/* Light theme from the system preference, unless the page forces dark. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --color-bg: #f4f6fb;
+    --color-surface: #ffffff;
+    --color-surface-raised: #eaeff8;
+    --color-border: #b9c4d9;
+    --color-text: #111a2b;
+    --color-text-muted: #46546d;
+    --color-accent: #4f3fc0;
+    --color-on-accent: #ffffff;
+    --color-focus: #111a2b;
+    --color-scrim: rgba(17, 26, 43, 0.5);
+
+    --color-passenger: #00659e;
+    --color-passenger-soft: rgba(0, 101, 158, 0.1);
+    --color-operator: #a04d00;
+    --color-operator-soft: rgba(160, 77, 0, 0.1);
+
+    --color-ok: #136c37;
+    --color-ok-soft: rgba(19, 108, 55, 0.1);
+    --color-warn: #7a5b00;
+    --color-warn-soft: rgba(122, 91, 0, 0.12);
+    --color-danger: #b3261e;
+    --color-danger-soft: rgba(179, 38, 30, 0.1);
+    --color-simulated: #7a2fb5;
+    --color-simulated-soft: rgba(122, 47, 181, 0.1);
+  }
+}
+
+/* Light theme forced by the page. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #f4f6fb;
+  --color-surface: #ffffff;
+  --color-surface-raised: #eaeff8;
+  --color-border: #b9c4d9;
+  --color-text: #111a2b;
+  --color-text-muted: #46546d;
+  --color-accent: #4f3fc0;
+  --color-on-accent: #ffffff;
+  --color-focus: #111a2b;
+  --color-scrim: rgba(17, 26, 43, 0.5);
+
+  --color-passenger: #00659e;
+  --color-passenger-soft: rgba(0, 101, 158, 0.1);
+  --color-operator: #a04d00;
+  --color-operator-soft: rgba(160, 77, 0, 0.1);
+
+  --color-ok: #136c37;
+  --color-ok-soft: rgba(19, 108, 55, 0.1);
+  --color-warn: #7a5b00;
+  --color-warn-soft: rgba(122, 91, 0, 0.12);
+  --color-danger: #b3261e;
+  --color-danger-soft: rgba(179, 38, 30, 0.1);
+  --color-simulated: #7a2fb5;
+  --color-simulated-soft: rgba(122, 47, 181, 0.1);
+}
+
+/* Dark theme forced by the page (same values as the default, for symmetry with data-theme="light"). */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* Waveforms keep showing the real audio; only decorative transitions go away. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+  }
+}

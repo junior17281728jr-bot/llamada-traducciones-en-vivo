@@ -1,0 +1,32 @@
+# Dependencias y salidas de compilacion
+node_modules/
+dist/
+release/
+*.tsbuildinfo
+.vite/
+
+# Secretos y configuracion local
+.env
+.env.*
+!.env.example
+
+# Datos en tiempo de ejecucion: historial, transcripciones, claves cifradas y grabaciones de llamadas
+data/
+grabaciones/
+recordings/
+
+# Claves y certificados: nunca al repositorio
+*.key
+*.pem
+
+# Pruebas
+coverage/
+test-results/
+playwright-report/
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

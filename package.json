@@ -1,0 +1,29 @@
+{
+  "name": "telecomway-traductor-llamadas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telecomway: llamadas entrantes y salientes con traducción de voz en vivo (operadores en español, pasajeros en otros idiomas).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "tools/*"
+  ],
+  "scripts": {
+    "build": "tsc -b && npm run build:renderer -w @tw/desktop",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "clean": "tsc -b --clean",
+    "dev:server": "npm run dev -w @tw/server",
+    "dev:desktop": "npm run dev -w @tw/desktop"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
