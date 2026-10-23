@@ -13,7 +13,9 @@
     "dev:electron": "tsc -b && electron .",
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.renderer.json",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "package:win": "npm run build && electron-builder --win --x64",
+    "package:mac": "npm run build && electron-builder --mac --arm64 --x64"
   },
   "dependencies": {
     "@tw/shared": "*",
@@ -33,5 +35,48 @@
     "electron-builder": "^26.15.3",
     "jsdom": "^29.1.1",
     "vite": "^7.3.7"
+  },
+  "build": {
+    "appId": "com.telecomway.traductor",
+    "productName": "Telecomway Traductor",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/main/**",
+      "dist/preload/**",
+      "dist/renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.business",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Telecomway usa el micrófono para traducir tus llamadas."
+      }
+    }
   }
 }

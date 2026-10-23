@@ -1,0 +1,40 @@
+# Construye los instaladores de Windows y de Mac. SIN PROBAR: este archivo se escribió sin poder ejecutarlo.
+# Se lanza a mano desde la pestaña Actions de GitHub (Run workflow) o al crear una etiqueta v*.
+# Los instaladores NO están firmados: Windows y Mac mostrarán un aviso al abrirlos (ver docs/EMPAQUETADO.md).
+name: Construir app de escritorio
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['v*']
+
+jobs:
+  construir:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Instalador de Windows
+        if: matrix.os == 'windows-latest'
+        run: npm run package:win -w @tw/desktop
+      - name: Instalador de Mac
+        if: matrix.os == 'macos-latest'
+        run: npm run package:mac -w @tw/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instalador-${{ matrix.os }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.dmg
+          if-no-files-found: error

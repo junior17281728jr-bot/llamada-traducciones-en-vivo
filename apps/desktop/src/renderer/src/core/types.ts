@@ -160,10 +160,12 @@ export interface CallActions {
   /** Switch between Manual / Automático / Mixto keeping the languages already chosen. */
   setMode(mode: LanguageMode): void;
   mute(muted: boolean): void;
-  /** Simulated mode only: inject text as if the passenger had said it. */
-  debugSay(text: string, lang: string): void;
+  /** Simulated mode only: inject text as if the passenger (default) or the operator had said it. */
+  debugSay(text: string, lang: string, as?: Speaker): void;
   /** Close the screen of an ended call. */
   dismissEndedCall(): void;
+  /** Hides the last error banner. */
+  dismissError?(): void;
 }
 
 export interface CallClientApi {
