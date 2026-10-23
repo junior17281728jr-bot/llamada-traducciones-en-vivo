@@ -1,14 +1,16 @@
-# Construye los instaladores de Windows y de Mac. SIN PROBAR: este archivo se escribió sin poder ejecutarlo.
-# Se lanza a mano desde la pestaña Actions de GitHub (Run workflow) o al crear una etiqueta v*.
+# Construye los instaladores de Windows y de Mac y los publica como versión "ultima" del repositorio,
+# con enlaces de descarga directos (sin iniciar sesión en GitHub).
+# Se lanza a mano desde la pestaña Actions (Run workflow) o al crear una etiqueta v*.
 # Los instaladores NO están firmados: Windows y Mac mostrarán un aviso al abrirlos (ver docs/EMPAQUETADO.md).
-# Las acciones de terceros van fijadas a un commit (SHA) y no a una etiqueta que pueda moverse: para
-# actualizarlas, cambia el SHA a mano tras revisar la nueva versión (el comentario indica la etiqueta).
 name: Construir app de escritorio
 
 on:
   workflow_dispatch: {}
   push:
     tags: ['v*']
+
+permissions:
+  contents: write
 
 jobs:
   construir:
@@ -18,8 +20,8 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -33,10 +35,36 @@ jobs:
         run: npm run package:mac -w @tw/desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@v4
         with:
           name: instalador-${{ matrix.os }}
           path: |
             apps/desktop/release/*.exe
             apps/desktop/release/*.dmg
           if-no-files-found: error
+
+  publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: instaladores
+          merge-multiple: true
+      - name: Publicar como versión "ultima"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ls -la instaladores
+          gh release delete ultima --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create ultima instaladores/*.dmg instaladores/*.exe \
+            -R "$GITHUB_REPOSITORY" \
+            --title "Última versión de prueba (sin firmar)" \
+            --notes "Instaladores generados automáticamente desde el commit ${GITHUB_SHA}.
+
+**Mac:** descarga el .dmg (arm64 para chips Apple M1 o posteriores, x64 para Intel), arrastra la app a Aplicaciones y ábrela con clic derecho > Abrir (no está firmada).
+**Windows:** descarga el .exe; si aparece el aviso de Windows, pulsa Más información > Ejecutar de todas formas.
+
+La app necesita el servidor en marcha (ver README)."
