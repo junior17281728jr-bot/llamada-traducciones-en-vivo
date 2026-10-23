@@ -10,6 +10,7 @@ import {
   INITIAL_CALL_CLIENT_STATE,
   type ActiveCall,
   type CallClientState,
+  type ClientError,
   type ConnectionState,
   type LaneState,
   type MicState,
@@ -20,6 +21,8 @@ export type ClientEvent =
   | { type: 'connection'; state: ConnectionState; error?: string | null }
   | { type: 'mic'; state: MicState }
   | { type: 'lane'; speaker: Speaker; patch: Partial<LaneState> }
+  /** A problem found on this computer (audio devices), shown like a server error. */
+  | { type: 'error'; code: ClientError['code']; message: string }
   | { type: 'dismissEnded' }
   | { type: 'clearError' };
 
@@ -45,7 +48,15 @@ function newCall(
     segments: previous?.segments ?? [],
     mic: previous?.mic ?? 'off',
     endedReason: null,
+    directAudio: previous?.directAudio ?? null,
   };
+}
+
+/** The call on screen is over as far as the server is concerned (it ended while this app was away). */
+function endStaleCall(state: CallClientState): CallClientState {
+  const call = state.call;
+  if (!call || call.state === 'ended') return state;
+  return { ...state, call: { ...call, state: 'ended', endedReason: 'connection_lost' } };
 }
 
 function mergeSegment(segments: TranscriptSegment[], segment: TranscriptSegment): TranscriptSegment[] {
@@ -71,6 +82,8 @@ export function reduce(state: CallClientState, event: ClientEvent, now: number):
       return state.call
         ? { ...state, call: { ...state.call, lanes: { ...state.call.lanes, [event.speaker]: { ...state.call.lanes[event.speaker], ...event.patch } } } }
         : state;
+    case 'error':
+      return { ...state, lastError: { code: event.code, message: event.message, at: now } };
     case 'dismissEnded':
       return state.call?.state === 'ended' ? { ...state, call: null } : state;
     case 'clearError':
@@ -83,8 +96,12 @@ export function reduce(state: CallClientState, event: ClientEvent, now: number):
 function reduceServer(state: CallClientState, message: ServerMessage, now: number): CallClientState {
   const call = state.call;
   switch (message.type) {
-    case 'auth.ok':
-      return { ...state, connection: 'connected', connectionError: null, operator: message.operator, server: message.server };
+    case 'auth.ok': {
+      const next = { ...state, connection: 'connected' as const, connectionError: null, operator: message.operator, server: message.server };
+      // After a reconnection the server says which call (if any) the operator still has: a call on screen that
+      // the server no longer knows about is shown as ended, never kept "En llamada" with the microphone open.
+      return state.call && state.call.state !== 'ended' && message.operator.currentCallId !== state.call.callId ? endStaleCall(next) : next;
+    }
     case 'auth.error':
       return { ...state, connection: 'disconnected', connectionError: message.message };
     case 'presence':
@@ -119,7 +136,14 @@ function reduceServer(state: CallClientState, message: ServerMessage, now: numbe
       if (!call || call.callId !== message.callId) return state;
       return {
         ...state,
-        call: { ...call, settings: message.settings, mode: languageModeOf(message.settings), detected: message.detected, notice: message.notice },
+        call: {
+          ...call,
+          settings: message.settings,
+          mode: languageModeOf(message.settings),
+          detected: message.detected,
+          notice: message.notice,
+          directAudio: message.directAudio ?? null,
+        },
       };
     case 'pipeline.stage': {
       if (!call || call.callId !== message.callId) return state;
@@ -135,8 +159,11 @@ function reduceServer(state: CallClientState, message: ServerMessage, now: numbe
       if (!call || call.callId !== message.callId) return { ...state, incoming };
       return { ...state, incoming, call: { ...call, state: 'ended', endedReason: message.reason } };
     }
-    case 'error':
-      return { ...state, lastError: { code: message.code, message: message.message, at: now } };
+    case 'error': {
+      const next = { ...state, lastError: { code: message.code, message: message.message, at: now } };
+      // "That call does not exist" about the call on screen: it is over, so the screen can be closed.
+      return message.code === 'unknown_call' && call && call.state !== 'ended' && message.callId === call.callId ? endStaleCall(next) : next;
+    }
   }
 }
 

@@ -18,7 +18,8 @@ import {
   type PartialLanguageSettings,
   type Speaker,
 } from '@tw/shared';
-import { BrowserAudioIO, MicError, type AudioIO, type MicHandle } from './audio-io';
+import { BrowserAudioIO, MicError, PlaybackError, type AudioIO, type MicHandle, type Playback } from './audio-io';
+import { readAudioPref } from './audio-prefs';
 import { RingLevelSource } from './levels';
 import { reduce, type ClientEvent } from './reducer';
 import { clearSession, websocketUrl, type Session } from './session';
@@ -28,12 +29,12 @@ import { SpeakingDetector } from './waveform';
 /** Windows kept per lane: 5 seconds of 20 ms windows. */
 export const LEVEL_CAPACITY = 250;
 
-const AUDIO_INPUT_KEY = 'tw.audio.input';
-const AUDIO_OUTPUT_KEY = 'tw.audio.output';
-const AUDIO_VOLUME_KEY = 'tw.audio.volume';
 const SIGNAL_LOST_MS = 1500;
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 const MIC_UNHEARD_MS = 2500;
+
+export const LOCAL_DEVICES_MISSING_MESSAGE =
+  'Faltan los dispositivos del modo audio del PC (la entrada con la voz del pasajero y la salida hacia el otro programa). Elígelos en Ajustes > Audio.';
 
 export interface WebSocketLike {
   binaryType: string;
@@ -57,20 +58,37 @@ export interface CallClientDeps {
   watchdogMs?: number;
 }
 
-function readPref(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
+/** The two virtual-cable ends of a "modo audio del PC" call. */
+interface CableIo {
+  /** Cable A: the other program's output, captured as the passenger's voice. */
+  capture: MicHandle;
+  /** Cable B: the other program's microphone, where the translated operator voice is played. */
+  playback: Playback;
 }
 
 const OPEN = 1;
+const MIC_RETRIES = 3;
+const MIC_RETRY_DELAY_MS = 1500;
+
+/** Spanish explanation for a failure while preparing the cable devices. */
+function describeLocalAudioError(error: unknown): string {
+  if (error instanceof PlaybackError) {
+    if (error.reason === 'unsupported') return `${error.message} El modo audio del PC no puede funcionar en este equipo.`;
+    return 'No se encuentra la salida hacia el micrófono del otro programa (cable B). Vuelve a elegirla en Ajustes > Audio.';
+  }
+  if (error instanceof MicError) {
+    if (error.reason === 'denied') return 'No hay permiso para capturar audio en este equipo. Permítelo en los ajustes del sistema y vuelve a intentarlo.';
+    return 'No se encuentra la entrada con la voz del pasajero (cable A). Vuelve a elegirla en Ajustes > Audio.';
+  }
+  return 'No se pudieron preparar los dispositivos del modo audio del PC.';
+}
 
 /**
  * The operator's connection to the server: WebSocket (with reconnection), microphone, translated voice
  * playback and the level buffers of both lanes. Levels only ever come from real audio:
- * - Pasajero lane: the server's levels frames (track 0), measured on the channel audio.
+ * - Pasajero lane: the server's levels frames (track 0), measured on the channel audio. In "modo audio del
+ *   PC" that audio is what this client captured from cable A and sent as `PassengerLocal` frames, but the
+ *   lane still follows the server's measurement, like in every other mode.
  * - Operador lane: the local microphone samples that are sent (an EnvelopeMeter on the same PCM). While
  *   there is no microphone (muted, denied, no call) the lane receives exact digital silence, which is what
  *   it really is, so the line stays flat. Server track 1 only confirms that the microphone arrives.
@@ -98,10 +116,17 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
   let watchdog: ReturnType<typeof setInterval> | null = null;
   let mic: MicHandle | null = null;
   let micToken = 0;
+  let micRetries = 0;
+  let micRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPassengerFrameAt: number | null = null;
   let serverHearsMicSince: number | null = null;
   let serverVoiceSeen = false;
   let localVoiceSinceMs: number | null = null;
+  /** Cable devices prepared for a `call.startLocal` the server has not confirmed yet. */
+  let pendingCable: CableIo | null = null;
+  /** Cable devices of the active local call. */
+  let cable: CableIo | null = null;
+  let cableToken = 0;
 
   const notify = (): void => {
     for (const listener of [...listeners]) listener();
@@ -132,8 +157,10 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     if (socket && socket.readyState === OPEN) socket.send(encodeMessage(message));
   };
 
+  const localError = (message: string): void => dispatch({ type: 'error', code: 'audio', message });
+
   // ---------------------------------------------------------------------------
-  // Call lifecycle: microphone and level state follow the call
+  // Call lifecycle: microphone, cable devices and level state follow the call
   // ---------------------------------------------------------------------------
 
   const afterTransition = (before: CallClientState, after: CallClientState): void => {
@@ -142,8 +169,15 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     if (isActive && (!wasActive || before.call?.callId !== after.call?.callId)) {
       resetLevels();
       void startMic(after.call!.callId);
+      if (after.call!.direction === 'local') attachCable();
+      else releasePendingCable();
     }
-    if (!isActive && wasActive) stopMic();
+    if (!isActive && wasActive) {
+      // The call is over: whatever translated voice was still queued must not keep playing.
+      audio.playback.stop();
+      stopMic();
+      releaseCable();
+    }
     // The last waveform stays on screen after hang-up; it is cleared when the screen is dismissed.
     if (after.call === null && before.call !== null) resetLevels();
   };
@@ -161,21 +195,29 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
   };
 
   const startMic = async (callId: string): Promise<void> => {
+    const retrying = micRetries;
     stopMic();
+    micRetries = retrying;
     const token = ++micToken;
     dispatch({ type: 'mic', state: 'requesting' });
     try {
-      const handle = await audio.startMic((pcm) => onMicPcm(pcm), readPref(AUDIO_INPUT_KEY) ?? undefined);
+      const handle = await audio.startMic((pcm) => onMicPcm(pcm), readAudioPref('input') ?? undefined, () => onMicLost(token, callId));
       if (token !== micToken || state.call?.callId !== callId) {
         handle.stop();
         return;
       }
       mic = handle;
+      micRetries = 0;
       dispatch({ type: 'mic', state: 'live' });
     } catch (error) {
       if (token !== micToken) return;
       const reason = error instanceof MicError ? error.reason : 'unavailable';
       dispatch({ type: 'mic', state: reason });
+      // A failed recovery attempt keeps retrying until the attempts run out.
+      if (micRetries > 0 && reason !== 'denied') {
+        scheduleMicRetry(callId);
+        return;
+      }
       dispatch({
         type: 'server',
         message: { type: 'error', code: 'pipeline_error', message: error instanceof Error ? error.message : 'No se pudo usar el micrófono', callId },
@@ -183,8 +225,33 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     }
   };
 
+  const scheduleMicRetry = (callId: string): void => {
+    if (micRetries >= MIC_RETRIES) {
+      localError('Se ha desconectado el micrófono y no se ha podido recuperar. Conéctalo y vuelve a empezar la llamada.');
+      return;
+    }
+    micRetries += 1;
+    localError(`Se ha desconectado el micrófono. Intentando recuperarlo (${micRetries} de ${MIC_RETRIES})…`);
+    micRetryTimer = setTimeout(() => {
+      micRetryTimer = null;
+      if (state.call?.callId === callId && state.call.state === 'active') void startMic(callId);
+    }, MIC_RETRY_DELAY_MS);
+  };
+
+  /** The microphone stopped on its own mid-call: warn, then try to get it back a few times. */
+  const onMicLost = (token: number, callId: string): void => {
+    if (token !== micToken || !state.call || state.call.callId !== callId || state.call.state !== 'active') return;
+    micToken += 1;
+    mic = null;
+    dispatch({ type: 'mic', state: 'unavailable' });
+    scheduleMicRetry(callId);
+  };
+
   const stopMic = (): void => {
     micToken += 1;
+    if (micRetryTimer) clearTimeout(micRetryTimer);
+    micRetryTimer = null;
+    micRetries = 0;
     mic?.stop();
     mic = null;
     if (state.call && state.call.mic !== 'off' && state.call.state !== 'ended') dispatch({ type: 'mic', state: 'off' });
@@ -198,6 +265,79 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
   };
 
   // ---------------------------------------------------------------------------
+  // "Modo audio del PC": cable A in (PassengerLocal), cable B out (TranslatedToPassenger)
+  // ---------------------------------------------------------------------------
+
+  const stopCable = (io: CableIo | null): void => {
+    io?.capture.stop();
+    io?.playback.stop();
+  };
+
+  const releasePendingCable = (): void => {
+    stopCable(pendingCable);
+    pendingCable = null;
+  };
+
+  const releaseCable = (): void => {
+    cableToken += 1;
+    releasePendingCable();
+    stopCable(cable);
+    cable = null;
+  };
+
+  /** The server confirmed the local call: the prepared cable devices now belong to it. */
+  const attachCable = (): void => {
+    stopCable(cable);
+    cable = pendingCable;
+    pendingCable = null;
+    if (!cable) {
+      localError('Esta sesión de audio del PC no tiene preparados los dispositivos de los cables. Termínala y vuelve a empezar desde la pestaña Llamada.');
+    }
+  };
+
+  /** Audio captured from cable A: sent as the passenger's voice. The lane follows the server's measurement, never these samples. */
+  const onCablePcm = (pcm: Uint8Array, token: number): void => {
+    const call = state.call;
+    if (token !== cableToken || !cable || !call || call.state !== 'active' || call.direction !== 'local') return;
+    if (socket && socket.readyState === OPEN) socket.send(encodeAudioFrame(AudioFrameType.PassengerLocal, pcm));
+  };
+
+  const prepareAndStartLocal = async (
+    label: string,
+    input: string,
+    output: string,
+    options: { langHint?: string; languages?: PartialLanguageSettings } | undefined,
+  ): Promise<void> => {
+    releaseCable();
+    const token = cableToken;
+    let playback: Playback | null = null;
+    let capture: MicHandle | null = null;
+    try {
+      playback = audio.createPlayback();
+      await playback.setSink(output);
+      capture = await audio.startCapture((pcm) => onCablePcm(pcm, token), { deviceId: input, processing: false });
+    } catch (error) {
+      capture?.stop();
+      playback?.stop();
+      if (token === cableToken) localError(describeLocalAudioError(error));
+      return;
+    }
+    if (token !== cableToken || !wantConnected || (state.call && state.call.state !== 'ended')) {
+      capture.stop();
+      playback.stop();
+      return;
+    }
+    pendingCable = { capture, playback };
+    const langHint = normalizeLanguageCode(options?.langHint);
+    sendMessage({
+      type: 'call.startLocal',
+      label,
+      ...(langHint ? { langHint } : {}),
+      ...(options?.languages ? { languages: options.languages } : {}),
+    });
+  };
+
+  // ---------------------------------------------------------------------------
   // Server messages
   // ---------------------------------------------------------------------------
 
@@ -206,7 +346,12 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     if (!decoded.ok) return;
     const frame = decoded.value;
     if (frame.kind === 'audio') {
-      if (frame.type === AudioFrameType.TranslatedPassenger && state.call?.state === 'active') audio.playback.play(frame.pcm);
+      const call = state.call;
+      if (!call || call.state !== 'active') return;
+      // The passenger's translated voice, or the passenger's own voice when both share the language (0x03), goes to
+      // the operator's headphones; the operator's translated voice (local calls) goes to cable B only, never there.
+      if (frame.type === AudioFrameType.TranslatedPassenger || frame.type === AudioFrameType.OriginalPassenger) audio.playback.play(frame.pcm);
+      else if (frame.type === AudioFrameType.TranslatedToPassenger && call.direction === 'local') cable?.playback.play(frame.pcm);
       return;
     }
     const { track, windows } = frame.levels;
@@ -236,6 +381,8 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       return;
     }
     if (message.type === 'auth.ok') attempt = 0;
+    // The server refused `call.startLocal` (busy, no line...): the cable devices prepared for it are released.
+    if (message.type === 'error' && pendingCable && state.call?.state !== 'active') releasePendingCable();
     dispatch({ type: 'server', message });
   };
 
@@ -263,6 +410,7 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     ws.onclose = () => {
       if (socket !== ws) return;
       socket = null;
+      releasePendingCable();
       if (wantConnected) scheduleReconnect('Se perdió la conexión con el servidor. Reconectando…');
     };
   };
@@ -320,6 +468,7 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       if (watchdog) clearInterval(watchdog);
       watchdog = null;
       stopMic();
+      releaseCable();
       audio.playback.stop();
       const ws = socket;
       socket = null;
@@ -333,6 +482,17 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       if (callId) sendMessage({ type: 'call.hangup', callId });
     },
     dial: (number, languages) => sendMessage({ type: 'call.dial', number, ...(languages ? { languages } : {}) }),
+    startLocal(label, options) {
+      const trimmed = label.trim();
+      if (!trimmed) return localError('Escribe una etiqueta para la sesión (por ejemplo «WhatsApp»).');
+      if (state.connection !== 'connected') return localError('Sin conexión con el servidor: no se puede empezar la traducción.');
+      if (!state.server?.localAudio) return localError('Este servidor no admite el modo audio del PC.');
+      if (state.call && state.call.state !== 'ended') return localError('Ya tienes una llamada en curso. Termínala antes de empezar otra.');
+      const input = readAudioPref('passengerInput');
+      const output = readAudioPref('passengerOutput');
+      if (!input || !output) return localError(LOCAL_DEVICES_MISSING_MESSAGE);
+      void prepareAndStartLocal(trimmed, input, output, options);
+    },
     setLanguages(settings: PartialLanguageSettings) {
       const callId = requireCall();
       if (callId) sendMessage({ type: 'call.setLanguages', callId, settings });
@@ -358,9 +518,10 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
   };
 
   // Output device and volume preferences (Settings writes them; they apply from the next call).
-  const volume = Number(readPref(AUDIO_VOLUME_KEY));
-  if (Number.isFinite(volume) && readPref(AUDIO_VOLUME_KEY) !== null) audio.playback.setVolume(volume);
-  const sink = readPref(AUDIO_OUTPUT_KEY);
+  const volumePref = readAudioPref('volume');
+  const volume = Number(volumePref);
+  if (volumePref !== null && Number.isFinite(volume)) audio.playback.setVolume(volume);
+  const sink = readAudioPref('output');
   if (sink) void audio.playback.setSink(sink).catch(() => undefined);
 
   return {

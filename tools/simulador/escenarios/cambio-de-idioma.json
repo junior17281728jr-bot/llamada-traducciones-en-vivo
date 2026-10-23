@@ -1,0 +1,58 @@
+{
+  "nombre": "Cambio de idioma en directo (portugués → inglés)",
+  "descripcion": "Pasajera brasileña que empieza en portugués y pasa al inglés a mitad de llamada. Incluye tres líneas muy cortas seguidas (menos de 3 palabras y 12 caracteres: evidencia débil para el control de idiomas, pensadas para provocar «idioma incierto») y un silencio largo de 9 segundos (las ondas del pasajero deben quedar planas).",
+  "desde": "+5511987654321",
+  "idioma": "pt",
+  "esperaRespuestaMs": 20000,
+  "lineas": [
+    {
+      "texto": "Olá, boa tarde. Perdi a minha ligação para Lisboa e preciso de saber qual é o próximo voo disponível.",
+      "idioma": "pt",
+      "pausaMs": 1200,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "O meu nome é Ana Souza e a reserva está no número P T três oito um.",
+      "idioma": "pt",
+      "pausaMs": 800,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Sorry, maybe it's easier if I switch to English. My husband is here and he doesn't speak Portuguese.",
+      "idioma": "en",
+      "pausaMs": 1000,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Ok.",
+      "idioma": "en",
+      "pausaMs": 600
+    },
+    {
+      "texto": "Yes, yes.",
+      "idioma": "en",
+      "pausaMs": 500
+    },
+    {
+      "texto": "Hm, right.",
+      "idioma": "en",
+      "pausaMs": 500
+    },
+    {
+      "texto": "We are checking the departures board right now, one moment please.",
+      "idioma": "en",
+      "pausaMs": 700
+    },
+    {
+      "texto": "Right, we can see it. Could you put us both on the seven o'clock flight tomorrow morning?",
+      "idioma": "en",
+      "pausaMs": 9000,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Perfect, thank you so much for your patience. Goodbye.",
+      "idioma": "en",
+      "pausaMs": 800
+    }
+  ]
+}

@@ -297,6 +297,11 @@ export interface DirectionPipeline {
    * the passenger's language (or hold the operator's text until it is known).
    */
   setPassengerLanguageState(state: LanguageState): void;
+  /**
+   * Current passenger-language view of this pipeline (for `passenger_to_operator`: its own detection, including a
+   * channel hint applied before any audio). Optional: older implementations may not expose it.
+   */
+  getLanguageState?(): LanguageState;
   getMetrics(): PipelineMetrics;
   close(): Promise<void>;
 }

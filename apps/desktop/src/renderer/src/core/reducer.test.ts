@@ -117,6 +117,36 @@ describe('call client reducer', () => {
     expect(reduce(run([active]), { type: 'dismissEnded' }, 1).call).not.toBeNull();
   });
 
+  it('after a reconnection, a call the server no longer has is shown as ended (connection lost), and one it still has is kept', () => {
+    const inCall = run([active]);
+    const gone = reduce(inCall, srv({ type: 'auth.ok', operator: { ...operator, status: 'available', currentCallId: null }, token: 't', server }), 1);
+    expect(gone.call).toMatchObject({ callId: 'c1', state: 'ended', endedReason: 'connection_lost' });
+    expect(gone.connection).toBe('connected');
+    const kept = reduce(inCall, srv({ type: 'auth.ok', operator: { ...operator, status: 'in_call', currentCallId: 'c1' }, token: 't', server }), 1);
+    expect(kept.call).toMatchObject({ callId: 'c1', state: 'active' });
+    // Already ended on screen: nothing changes.
+    const ended = run([active, srv({ type: 'call.ended', callId: 'c1', reason: 'hangup_passenger', durationMs: 1 })]);
+    expect(reduce(ended, srv({ type: 'auth.ok', operator, token: 't', server }), 1).call).toMatchObject({ endedReason: 'hangup_passenger' });
+  });
+
+  it('an unknown_call error about the call on screen ends it, so the screen can be closed', () => {
+    const state = run([active, srv({ type: 'error', code: 'unknown_call', message: 'Esa llamada ya ha terminado', callId: 'c1' })]);
+    expect(state.call).toMatchObject({ state: 'ended', endedReason: 'connection_lost' });
+    expect(state.lastError?.code).toBe('unknown_call');
+    const other = run([active, srv({ type: 'error', code: 'unknown_call', message: 'x', callId: 'c2' })]);
+    expect(other.call).toMatchObject({ state: 'active' });
+  });
+
+  it('keeps which directions carry the original voice (same language) from call.languages', () => {
+    const state = run([
+      active,
+      srv({ type: 'call.languages', callId: 'c1', settings, detected: { lang: 'es', status: 'confirmed', source: 'stt+translator', probability: null, agreeingSegments: 2 }, notice: null, directAudio: { passengerToOperator: true, operatorToPassenger: false } }),
+    ]);
+    expect(state.call?.directAudio).toEqual({ passengerToOperator: true, operatorToPassenger: false });
+    const older = run([active, srv({ type: 'call.languages', callId: 'c1', settings, detected: { lang: null, status: 'unknown', source: null, probability: null, agreeingSegments: 0 }, notice: null })]);
+    expect(older.call?.directAudio).toBeNull();
+  });
+
   it('clears an incoming offer when the call ends before it is answered', () => {
     const state = run([
       srv({ type: 'call.incoming', callId: 'c9', from: '+1' }),

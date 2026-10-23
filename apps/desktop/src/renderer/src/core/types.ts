@@ -109,6 +109,16 @@ export interface ActiveCall {
   mic: MicState;
   /** Set once the call ended; the screen stays until the operator dismisses it. */
   endedReason: CallEndReason | null;
+  /**
+   * Same language on both ends: which directions carry the ORIGINAL voice instead of a synthesised translation
+   * (from `call.languages.directAudio`; null until known or on an older server).
+   */
+  directAudio?: DirectAudioInfo | null;
+}
+
+export interface DirectAudioInfo {
+  passengerToOperator: boolean;
+  operatorToPassenger: boolean;
 }
 
 export interface ClientError {

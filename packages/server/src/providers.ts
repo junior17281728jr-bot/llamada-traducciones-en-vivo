@@ -1,9 +1,12 @@
 import {
+  ElevenLabsConfigError,
+  ElevenLabsPipelineFactory,
   MockPipelineFactory,
   MockTextTranslator,
   MockTts,
   UtteranceBus,
   utteranceKey,
+  type DirectionPipelineOptions,
 } from '@tw/pipeline';
 import {
   concatPcm,
@@ -30,9 +33,13 @@ export interface Providers {
 }
 
 /**
- * Chooses the implementations behind PROVIDERS and CHANNEL. Everything real is still missing from this
- * build: with PROVIDERS=elevenlabs or CHANNEL=twilio|whatsapp the server refuses to start instead of
- * pretending to work.
+ * Chooses the implementations behind PROVIDERS and CHANNEL.
+ * - PROVIDERS=mock: simulated STT, translator and voice (the utterance bus carries the text).
+ * - PROVIDERS=elevenlabs: real ElevenLabs STT/TTS and Claude translator. UNVERIFIED against the live
+ *   services (only tested against local simulators). The API keys are resolved when each session opens:
+ *   a missing key does not stop the server, it fails the first call with a clear message, and
+ *   `system.status` already shows `unconfigured`.
+ * - CHANNEL=twilio|whatsapp: not implemented; the server refuses to start instead of pretending to work.
  */
 export interface CreateProvidersOptions {
   /** Simulation speed (mock only). */
@@ -44,16 +51,38 @@ export interface CreateProvidersOptions {
 
 export function createProviders(config: ServerConfig, options: CreateProvidersOptions = {}): Providers {
   const speed = options.speed ?? 1;
-  if (config.providers !== 'mock') {
-    throw new NotConfiguredError(
-      'PROVIDERS=elevenlabs todavía no está disponible en esta versión: faltan los clientes de ElevenLabs y de Claude. Usa PROVIDERS=mock.',
-    );
-  }
   if (config.channel !== 'mock' && config.channel !== 'desktop-audio') {
     throw new NotConfiguredError(
       `CHANNEL=${config.channel} todavía no está implementado: no hay código de telefonía real. Mira docs/CANALES.md. Usa CHANNEL=mock.`,
     );
   }
+  const pipelineOptions: Partial<DirectionPipelineOptions> = {
+    holdMs: config.langHoldSeconds * 1000,
+    controller: {
+      fallbackLang: config.fallbackLang,
+      agreeSegments: config.langConfirmSegments,
+      minWords: config.langMinWords,
+      minProbability: config.langMinProbability,
+      switchSegments: Math.max(config.langChangeSegments, config.langConfirmSegments),
+    },
+  };
+
+  if (config.providers === 'elevenlabs') {
+    const env = options.env ?? process.env;
+    const getSecret = options.getSecret ?? ((name) => Promise.resolve(env[name]?.trim() || undefined));
+    let pipelines: ElevenLabsPipelineFactory;
+    try {
+      pipelines = new ElevenLabsPipelineFactory({ getSecret, env, pipeline: pipelineOptions });
+    } catch (error) {
+      if (error instanceof ElevenLabsConfigError) throw new NotConfiguredError(error.message);
+      throw error;
+    }
+    // Real voices and translation, but calls still come from the simulated channel: its synthetic
+    // "speech" is not real speech, so the real STT will not understand it. Only real audio will.
+    const channel = new MockCallChannel({ speed });
+    return { pipelines, channel, bus: null, simulatedProviders: false, speed };
+  }
+
   const bus = new UtteranceBus();
   const channel = new MockCallChannel({ speed });
   channel.onUtterance((utterance) => bus.say(utteranceKey(utterance.callId, 'passenger'), { text: utterance.text, lang: utterance.lang }));
@@ -61,16 +90,7 @@ export function createProviders(config: ServerConfig, options: CreateProvidersOp
     bus,
     translator: new MockTextTranslator({ latencyMs: 150 / speed }),
     tts: new MockTts({ realtime: speed === 1 }),
-    pipeline: {
-      holdMs: config.langHoldSeconds * 1000,
-      controller: {
-        fallbackLang: config.fallbackLang,
-        agreeSegments: config.langConfirmSegments,
-        minWords: config.langMinWords,
-        minProbability: config.langMinProbability,
-        switchSegments: Math.max(config.langChangeSegments, config.langConfirmSegments),
-      },
-    },
+    pipeline: pipelineOptions,
   });
   return { pipelines, channel, bus, simulatedProviders: true, speed };
 }

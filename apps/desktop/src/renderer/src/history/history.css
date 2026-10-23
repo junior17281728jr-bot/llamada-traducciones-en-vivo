@@ -1,0 +1,112 @@
+/* History: filters, call list and the two-column transcript. Tokens from theme/tokens.css. */
+
+.history__list {
+  padding: 0;
+  overflow: hidden;
+}
+.history__list .table td {
+  overflow-wrap: anywhere;
+}
+.history__audio {
+  width: 100%;
+  max-width: 560px;
+}
+
+/* Two columns: Pasajero on the left (blue), Operador on the right (orange). Each utterance sits in its speaker's column. */
+.transcript2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  align-items: start;
+}
+.transcript2__head {
+  font-weight: var(--weight-bold);
+  padding-bottom: var(--space-1);
+  border-bottom: 3px solid var(--color-passenger);
+}
+.transcript2__head--operator {
+  border-bottom-color: var(--color-operator);
+  text-align: right;
+}
+.transcript2__row {
+  display: contents;
+}
+.transcript2__cell {
+  min-width: 0;
+}
+.transcript2__empty {
+  grid-column: 1 / -1;
+}
+.transcript2__bubble {
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-passenger);
+  background: var(--color-passenger-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+.transcript2__bubble--operator {
+  border-left-color: var(--color-operator);
+  background: var(--color-operator-soft);
+}
+.transcript2__bubble p {
+  margin: 0;
+}
+.transcript2__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  margin-bottom: var(--space-1) !important;
+}
+.transcript2__original {
+  font-size: var(--text-md);
+}
+.transcript2__translation {
+  margin-top: var(--space-1) !important;
+  font-weight: var(--weight-medium);
+}
+.transcript2__translation--missing {
+  color: var(--color-text-muted);
+  font-weight: var(--weight-regular);
+}
+
+@media (max-width: 640px) {
+  /* One column on narrow windows; the colour bar and the speaker label on each bubble keep them apart. */
+  .transcript2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .transcript2__head--operator {
+    display: none;
+  }
+  .transcript2__head--passenger {
+    border-bottom-color: var(--color-border);
+  }
+  .transcript2__head--passenger::after {
+    content: ' / Operador';
+    font-weight: var(--weight-regular);
+    color: var(--color-text-muted);
+  }
+  .transcript2__cell:empty {
+    display: none;
+  }
+  .transcript2__bubble--operator {
+    margin-left: var(--space-5);
+  }
+  .transcript2__bubble--passenger {
+    margin-right: var(--space-5);
+  }
+  .transcript2__bubble::before {
+    content: 'Pasajero';
+    display: block;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-bold);
+    color: var(--color-passenger);
+  }
+  .transcript2__bubble--operator::before {
+    content: 'Operador';
+    color: var(--color-operator);
+  }
+}

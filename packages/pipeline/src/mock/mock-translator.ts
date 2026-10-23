@@ -68,7 +68,8 @@ export class MockTextTranslator implements TextTranslator {
     const detected = (this.options.detect ?? guessLanguage)(request.text);
     const known = PHRASES[`${to}|${normalizePhrase(request.text)}`];
     const from = normalizeLanguageCode(request.from) ?? detected ?? '?';
-    const text = known ?? `[${from}>${to}] ${request.text}`;
+    // Like the real prompt: a phrase already in the target language comes back unchanged.
+    const text = known ?? (from === to ? request.text : `[${from}>${to}] ${request.text}`);
     return detected ? { text, detectedFrom: detected } : { text };
   }
 }

@@ -5,9 +5,11 @@
  */
 import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
+/** The one page this app loads from disk (`dist/renderer/index.html`), as the URL the renderer reports. */
+const rendererFileUrl = pathToFileURL(join(here, '../renderer/index.html')).href;
 
 /** Vite dev server URL (`npm run dev:desktop` then `electron .` with TW_RENDERER_URL set). */
 const rendererDevUrl = process.env['TW_RENDERER_URL'];
@@ -16,8 +18,11 @@ const serverUrl = process.env['TW_SERVER_URL'] ?? 'http://127.0.0.1:8787';
 
 const CONFIG_CHANNEL = 'tw:get-config';
 
-function isOurRenderer(url: string): boolean {
-  return rendererDevUrl ? url.startsWith(rendererDevUrl) : url.startsWith('file://');
+/** Only our own page gets the microphone and may be navigated to: not any `file://` URL, only `dist/renderer/index.html`. */
+export function isOurRenderer(url: string): boolean {
+  if (rendererDevUrl) return url.startsWith(rendererDevUrl);
+  const withoutFragment = url.split('#')[0]!.split('?')[0]!;
+  return withoutFragment === rendererFileUrl;
 }
 
 function createWindow(): void {
@@ -42,6 +47,11 @@ function createWindow(): void {
     if (url.startsWith('https://')) void shell.openExternal(url);
     return { action: 'deny' };
   });
+  // The window never navigates away from our page (a link, a dropped file, a crafted URL) and never embeds a webview.
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isOurRenderer(url)) event.preventDefault();
+  });
+  window.webContents.on('will-attach-webview', (event) => event.preventDefault());
 
   if (rendererDevUrl) void window.loadURL(rendererDevUrl);
   else void window.loadFile(join(here, '../renderer/index.html'));

@@ -10,7 +10,7 @@ import { handleSimSocket } from './sim-socket.js';
 
 export interface ServerDeps extends ApiDeps {
   channel: CallChannel;
-  socket: Pick<OperatorSocketDeps, 'debug' | 'systemStatus'>;
+  socket: Pick<OperatorSocketDeps, 'debug' | 'systemStatus' | 'localAudio'>;
 }
 
 function corsHeaders(req: IncomingMessage, allowed: string[]): Record<string, string> {
@@ -34,7 +34,9 @@ export interface RunningServer {
 
 /**
  * HTTP API + operator WebSocket (`/operator`) + simulator WebSocket (`/sim`, only with the mock
- * channel and only from the same machine). Operators authenticate with bearer tokens, never cookies.
+ * channel, only from the same machine and never from a browser page). Operators authenticate with
+ * bearer tokens, never cookies. Everything is plain HTTP/WS: outside 127.0.0.1 put a TLS proxy in
+ * front (and do not forward `/sim` through it: behind a proxy every client looks local).
  */
 export function createTelecomwayServer(deps: ServerDeps): RunningServer {
   const { config, logger } = deps;
@@ -77,6 +79,13 @@ export function createTelecomwayServer(deps: ServerDeps): RunningServer {
     if (pathname === OPERATOR_WS_PATH) {
       operatorWss.handleUpgrade(req, socket, head, (ws) => operatorWss.emit('connection', ws, req));
     } else if (pathname === SIM_WS_PATH && mock) {
+      // Browsers always send Origin and the simulator CLI never does: a web page open on this machine must not
+      // be able to ring fake calls or listen to translated audio through the local-only simulator socket.
+      if (origin && !config.allowedOrigins.includes(origin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       simWss.handleUpgrade(req, socket, head, (ws) => simWss.emit('connection', ws, req));
     } else {
       socket.destroy();

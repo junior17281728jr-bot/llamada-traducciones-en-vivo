@@ -14,8 +14,9 @@ import {
   type LanguageSettings,
   type ServerMessage,
 } from '@tw/shared';
-import { MicError, type AudioIO } from './audio-io';
-import { createCallClient, type WebSocketLike } from './call-client';
+import { MicError, PlaybackError, type AudioIO, type CaptureOptions, type Playback } from './audio-io';
+import { AUDIO_PREF_KEYS } from './audio-prefs';
+import { LOCAL_DEVICES_MISSING_MESSAGE, createCallClient, type WebSocketLike } from './call-client';
 import { getSession, resetSessionForTests, setSession, type Session } from './session';
 
 const operator = { id: 'op1', name: 'Ana', role: 'operator' as const, status: 'available' as const, currentCallId: null, autoAccept: false };
@@ -64,6 +65,29 @@ class FakeSocket implements WebSocketLike {
   micFrames(): Uint8Array[] {
     return this.sent.filter((item): item is Uint8Array => item instanceof Uint8Array);
   }
+  /** Binary frames of one audio type. */
+  framesOf(type: number): Uint8Array[] {
+    return this.micFrames().filter((frame) => frame[0] === type);
+  }
+}
+
+class FakePlayback implements Playback {
+  played: Uint8Array[] = [];
+  sink: string | null = null;
+  stops = 0;
+  constructor(private readonly failSinkWith: PlaybackError | null) {}
+  play(pcm: Uint8Array): void {
+    this.played.push(pcm);
+  }
+  setVolume(): void {}
+  setSink(deviceId: string): Promise<void> {
+    if (this.failSinkWith) return Promise.reject(this.failSinkWith);
+    this.sink = deviceId;
+    return Promise.resolve();
+  }
+  stop(): void {
+    this.stops += 1;
+  }
 }
 
 class FakeAudio implements AudioIO {
@@ -73,11 +97,29 @@ class FakeAudio implements AudioIO {
   failWith: MicError | null = null;
   played: Uint8Array[] = [];
   playbackStops = 0;
-  async startMic(onPcm: (pcm: Uint8Array) => void) {
+  /** "Modo audio del PC": captures of cable A and playbacks created for cable B. */
+  captures: { onPcm: (pcm: Uint8Array) => void; options: CaptureOptions }[] = [];
+  captureStops = 0;
+  failCaptureWith: MicError | null = null;
+  cablePlaybacks: FakePlayback[] = [];
+  failSinkWith: PlaybackError | null = null;
+  onEnded: (() => void) | null = null;
+  async startMic(onPcm: (pcm: Uint8Array) => void, _deviceId?: string, onEnded?: () => void) {
     this.micStarts += 1;
     if (this.failWith) throw this.failWith;
     this.onPcm = onPcm;
+    this.onEnded = onEnded ?? null;
     return { stop: () => void (this.micStops += 1) };
+  }
+  async startCapture(onPcm: (pcm: Uint8Array) => void, options: CaptureOptions) {
+    if (this.failCaptureWith) throw this.failCaptureWith;
+    this.captures.push({ onPcm, options });
+    return { stop: () => void (this.captureStops += 1) };
+  }
+  createPlayback(): Playback {
+    const playback = new FakePlayback(this.failSinkWith);
+    this.cablePlaybacks.push(playback);
+    return playback;
   }
   playback = {
     play: (pcm: Uint8Array) => void this.played.push(pcm),
@@ -91,11 +133,12 @@ const win = (max: number): EnvelopeWindow => ({ min: -max, max, rms: max / 2 });
 const SILENT: EnvelopeWindow = { min: 0, max: 0, rms: 0 };
 const levelsFrame = (track: number, windows: EnvelopeWindow[], seq = 0) => encodeLevelsFrame({ track: track as never, seq, timeMs: seq * 20, windows });
 const activeCall = (muted = false): ServerMessage => ({ type: 'call.state', callId: 'c1', state: 'active', direction: 'inbound', remoteNumber: '+34600', answeredAt: 1, muted, simulated: true });
-const authOk = (debug = true): ServerMessage => ({
+const activeLocalCall = (): ServerMessage => ({ type: 'call.state', callId: 'l1', state: 'active', direction: 'local', remoteNumber: 'WhatsApp', answeredAt: 1, muted: false, simulated: false });
+const authOk = (debug = true, localAudio = false): ServerMessage => ({
   type: 'auth.ok',
   operator,
   token: 'tok-123',
-  server: { protocolVersion: 1, providers: 'mock', channel: 'mock', debug, maxCalls: 3 },
+  server: { protocolVersion: 1, providers: 'mock', channel: 'mock', debug, maxCalls: 3, localAudio },
 });
 const languages = (s: LanguageSettings = settings): ServerMessage => ({
   type: 'call.languages',
@@ -142,14 +185,26 @@ async function connectAndStartCall(client: ReturnType<typeof setup>, debug = tru
   return socket();
 }
 
+function setCablePrefs(input: string | null = 'cable-a', output: string | null = 'cable-b'): void {
+  for (const [key, value] of [
+    [AUDIO_PREF_KEYS.passengerInput, input],
+    [AUDIO_PREF_KEYS.passengerOutput, output],
+  ] as const) {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  }
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   resetSessionForTests();
   setSession(session);
+  setCablePrefs(null, null);
 });
 afterEach(() => {
   vi.useRealTimers();
   resetSessionForTests();
+  setCablePrefs(null, null);
 });
 
 describe('connection', () => {
@@ -371,14 +426,16 @@ describe('the passenger lane', () => {
     expect(client.getState().call!.lanes.passenger.levelsFlowing).toBe(true);
   });
 
-  it('plays the translated voice only, and clears the waveforms when the ended call is dismissed', async () => {
+  it('plays the translated voice and the relayed original voice (same language), and clears the waveforms when the ended call is dismissed', async () => {
     const client = setup();
     const ws = await connectAndStartCall(client);
     const voice = generateSinePcm16(200, 60, 0.4);
+    const original = generateSinePcm16(300, 60, 0.4);
     ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedPassenger, voice));
-    ws.receiveBinary(encodeAudioFrame(AudioFrameType.OriginalPassenger, voice));
-    expect(audio.played).toHaveLength(1);
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.OriginalPassenger, original));
+    expect(audio.played).toHaveLength(2);
     expect(Buffer.from(audio.played[0]!).equals(Buffer.from(voice))).toBe(true);
+    expect(Buffer.from(audio.played[1]!).equals(Buffer.from(original))).toBe(true);
 
     ws.receiveBinary(levelsFrame(LevelTrack.PassengerIn, [win(0.4)], 0));
     ws.receive({ type: 'call.ended', callId: 'c1', reason: 'hangup_passenger', durationMs: 5 });
@@ -395,5 +452,226 @@ describe('the passenger lane', () => {
     ws.receiveBinary(new Uint8Array([0x7f, 1, 2]));
     expect(audio.played).toHaveLength(0);
     expect(client.levels.passenger.snapshot()).toHaveLength(0);
+  });
+
+  it('never plays the voice meant for the cable (0x05) on the headphones of a phone call', async () => {
+    const client = setup();
+    const ws = await connectAndStartCall(client);
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedToPassenger, generateSinePcm16(200, 20, 0.4)));
+    expect(audio.played).toHaveLength(0);
+    expect(audio.cablePlaybacks).toHaveLength(0);
+  });
+});
+
+describe('modo audio del PC', () => {
+  async function connectLocalReady(client: ReturnType<typeof setup>): Promise<FakeSocket> {
+    client.actions.connect();
+    socket().open();
+    socket().receive(authOk(true, true));
+    await flush();
+    socket().sent.length = 0;
+    return socket();
+  }
+
+  it('prepares cable A (no processing) and cable B, asks the server, sends the cable as 0x04 and plays 0x05 on cable B only', async () => {
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectLocalReady(client);
+    const languages = { passengerSpeaks: { mode: 'fixed', lang: 'en' }, passengerHears: { mode: 'fixed', lang: 'en' } } as const;
+    client.actions.startLocal!('WhatsApp', { langHint: 'en-US', languages });
+    expect(ws.messages()).toEqual([]);
+    await flush();
+
+    expect(audio.cablePlaybacks).toHaveLength(1);
+    expect(audio.cablePlaybacks[0]!.sink).toBe('cable-b');
+    expect(audio.captures).toHaveLength(1);
+    expect(audio.captures[0]!.options).toEqual({ deviceId: 'cable-a', processing: false });
+    expect(audio.micStarts).toBe(0);
+    expect(ws.messages()).toEqual([{ type: 'call.startLocal', label: 'WhatsApp', langHint: 'en', languages }]);
+
+    // Audio captured before the server confirms is dropped.
+    audio.captures[0]!.onPcm(generateSinePcm16(300, 20, 0.5));
+    expect(ws.framesOf(AudioFrameType.PassengerLocal)).toHaveLength(0);
+
+    ws.receive(activeLocalCall());
+    ws.receive({
+      type: 'call.languages',
+      callId: 'l1',
+      settings: { operatorLang: 'es', ...languages },
+      detected: { lang: null, status: 'unknown', source: null, probability: null, agreeingSegments: 0 },
+      notice: null,
+    });
+    await flush();
+    expect(client.getState().call).toMatchObject({ direction: 'local', remoteNumber: 'WhatsApp', mic: 'live' });
+    expect(audio.micStarts).toBe(1);
+
+    // Cable A goes out as PassengerLocal, byte for byte, and never feeds the passenger lane locally.
+    const voice = generateSinePcm16(300, 40, 0.5);
+    audio.captures[0]!.onPcm(voice.slice(0, 640));
+    audio.captures[0]!.onPcm(voice.slice(640, 1280));
+    const frames = ws.framesOf(AudioFrameType.PassengerLocal);
+    expect(frames).toHaveLength(2);
+    const decoded = decodeAudioFrame(frames[0]!);
+    expect(decoded.ok && Buffer.from(decoded.value.pcm).equals(Buffer.from(voice.slice(0, 640)))).toBe(true);
+    expect(client.levels.passenger.snapshot()).toHaveLength(0);
+    expect(client.levels.operator.snapshot()).toHaveLength(0);
+    // The passenger lane still follows the server's measurement of that same audio.
+    ws.receiveBinary(levelsFrame(LevelTrack.PassengerIn, [win(0.4)], 0));
+    expect(client.levels.passenger.snapshot()).toHaveLength(1);
+
+    // The operator microphone keeps working as always (0x01), measured locally.
+    audio.onPcm!(generateSinePcm16(300, 20, 0.5));
+    expect(ws.framesOf(AudioFrameType.OperatorMic)).toHaveLength(1);
+    expect(client.levels.operator.snapshot().length).toBeGreaterThan(0);
+
+    // 0x05 goes to cable B, never to the headphones; 0x02 goes to the headphones, never to the cable.
+    const forCable = generateSinePcm16(180, 20, 0.4);
+    const forOperator = generateSinePcm16(120, 20, 0.4);
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedToPassenger, forCable));
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedPassenger, forOperator));
+    expect(audio.cablePlaybacks[0]!.played).toHaveLength(1);
+    expect(Buffer.from(audio.cablePlaybacks[0]!.played[0]!).equals(Buffer.from(forCable))).toBe(true);
+    expect(audio.played).toHaveLength(1);
+    expect(Buffer.from(audio.played[0]!).equals(Buffer.from(forOperator))).toBe(true);
+
+    // Ending releases everything: capture, cable playback and microphone; late cable audio goes nowhere.
+    ws.receive({ type: 'call.ended', callId: 'l1', reason: 'hangup_operator', durationMs: 100 });
+    expect(audio.captureStops).toBe(1);
+    expect(audio.cablePlaybacks[0]!.stops).toBeGreaterThanOrEqual(1);
+    expect(audio.micStops).toBe(1);
+    audio.captures[0]!.onPcm(voice.slice(0, 640));
+    expect(ws.framesOf(AudioFrameType.PassengerLocal)).toHaveLength(2);
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedToPassenger, forCable));
+    expect(audio.cablePlaybacks[0]!.played).toHaveLength(1);
+  });
+
+  it('does not start without the two devices from Settings, and says where to choose them', async () => {
+    setCablePrefs('cable-a', null);
+    const client = setup();
+    const ws = await connectLocalReady(client);
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(ws.messages()).toEqual([]);
+    expect(audio.captures).toHaveLength(0);
+    expect(audio.cablePlaybacks).toHaveLength(0);
+    expect(client.getState().lastError).toMatchObject({ code: 'audio', message: LOCAL_DEVICES_MISSING_MESSAGE });
+    expect(client.getState().lastError!.message).toContain('Ajustes > Audio');
+  });
+
+  it('does not start when the output cannot be chosen (no setSinkId) or a cable is missing, and releases what it prepared', async () => {
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectLocalReady(client);
+    audio.failSinkWith = new PlaybackError('unsupported', 'Este equipo no permite elegir el dispositivo de salida de audio (falta AudioContext.setSinkId).');
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(ws.messages()).toEqual([]);
+    expect(audio.captures).toHaveLength(0);
+    expect(audio.cablePlaybacks[0]!.stops).toBe(1);
+    expect(client.getState().lastError!.message).toContain('setSinkId');
+
+    audio.failSinkWith = null;
+    audio.failCaptureWith = new MicError('unavailable', 'No se encuentra el dispositivo de entrada elegido');
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(ws.messages()).toEqual([]);
+    expect(audio.cablePlaybacks).toHaveLength(2);
+    expect(audio.cablePlaybacks[1]!.stops).toBe(1);
+    expect(client.getState().lastError!.message).toContain('cable A');
+  });
+
+  it('refuses when the server has no modo audio del PC, without a connection, or during a call', async () => {
+    setCablePrefs();
+    const client = setup();
+    client.actions.connect();
+    socket().open();
+    socket().receive(authOk(true, false));
+    await flush();
+    socket().sent.length = 0;
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(socket().messages()).toEqual([]);
+    expect(client.getState().lastError!.message).toContain('no admite el modo audio del PC');
+
+    socket().receive(authOk(true, true));
+    socket().receive(activeCall());
+    await flush();
+    socket().sent.length = 0;
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(socket().messages()).toEqual([]);
+    expect(client.getState().lastError!.message).toContain('llamada en curso');
+    expect(audio.captures).toHaveLength(0);
+  });
+
+  it('releases the prepared cable devices when the server refuses the local call or the connection drops', async () => {
+    setCablePrefs();
+    const client = setup({ reconnectDelaysMs: [100] });
+    const ws = await connectLocalReady(client);
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(ws.messages()).toHaveLength(1);
+    ws.receive({ type: 'error', code: 'operator_busy', message: 'Ya estás en una llamada' });
+    expect(audio.captureStops).toBe(1);
+    expect(audio.cablePlaybacks[0]!.stops).toBe(1);
+    expect(client.getState().lastError).toMatchObject({ code: 'operator_busy' });
+
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(audio.captures).toHaveLength(2);
+    ws.drop();
+    expect(audio.captureStops).toBe(2);
+    expect(audio.cablePlaybacks[1]!.stops).toBe(1);
+  });
+});
+
+describe('cutting the voice and losing the microphone', () => {
+  it('stops the translated voice at once when the call ends, whoever hung up', async () => {
+    const client = setup();
+    const ws = await connectAndStartCall(client);
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedPassenger, generateSinePcm16(200, 60, 0.4)));
+    expect(audio.played).toHaveLength(1);
+    const stopsBefore = audio.playbackStops;
+    ws.receive({ type: 'call.ended', callId: 'c1', reason: 'hangup_passenger', durationMs: 5 });
+    expect(audio.playbackStops).toBe(stopsBefore + 1);
+    // Nothing that arrives late is played either.
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedPassenger, generateSinePcm16(200, 60, 0.4)));
+    expect(audio.played).toHaveLength(1);
+  });
+
+  it('warns when the microphone disappears mid-call and gets it back', async () => {
+    const client = setup();
+    await connectAndStartCall(client);
+    expect(audio.micStarts).toBe(1);
+    audio.onEnded?.();
+    expect(client.getState().call!.mic).toBe('unavailable');
+    expect(client.getState().lastError?.message).toContain('Se ha desconectado el micrófono');
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(audio.micStarts).toBe(2);
+    expect(client.getState().call!.mic).toBe('live');
+  });
+
+  it('gives up after a few failed attempts and says so', async () => {
+    const client = setup();
+    await connectAndStartCall(client);
+    audio.failWith = new MicError('unavailable', 'No se encontró ningún micrófono');
+    audio.onEnded?.();
+    for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1600);
+    expect(audio.micStarts).toBe(4);
+    expect(client.getState().call!.mic).toBe('unavailable');
+    expect(client.getState().lastError?.message).toContain('no se ha podido recuperar');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(audio.micStarts).toBe(4);
+  });
+
+  it('a recovered microphone starts the attempt count again', async () => {
+    const client = setup();
+    await connectAndStartCall(client);
+    for (let i = 0; i < 5; i++) {
+      audio.onEnded?.();
+      await vi.advanceTimersByTimeAsync(1600);
+      expect(client.getState().call!.mic).toBe('live');
+    }
+    expect(audio.micStarts).toBe(6);
   });
 });

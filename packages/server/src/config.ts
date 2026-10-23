@@ -17,8 +17,10 @@ export interface ServerConfig {
   channel: ChannelKind;
   dataDir: string;
   secretsKey: string | null;
-  sessionSecret: string | null;
+  /** Sessions live in memory: a restart logs every operator out. */
   sessionTtlHours: number;
+  /** Seconds a call survives a dropped operator connection while the app reconnects (0 = hang up at once). */
+  reconnectGraceSeconds: number;
   maxConcurrentCalls: number;
   autoAccept: boolean;
   ringTimeoutSeconds: number;
@@ -115,8 +117,8 @@ export function loadConfig(env: Env = process.env): ServerConfig {
     channel,
     dataDir: resolve(text(env, 'DATA_DIR', './data')),
     secretsKey: env.SECRETS_KEY?.trim() || null,
-    sessionSecret: env.SESSION_SECRET?.trim() || null,
     sessionTtlHours: integer(env, 'SESSION_TTL_HOURS', 12, 1, 24 * 30),
+    reconnectGraceSeconds: integer(env, 'RECONNECT_GRACE_SECONDS', 10, 0, 300),
     maxConcurrentCalls: integer(env, 'MAX_CONCURRENT_CALLS', 3, 1, 100),
     autoAccept: flag(env, 'AUTO_ACCEPT', false),
     ringTimeoutSeconds: integer(env, 'RING_TIMEOUT_SECONDS', 30, 1, 600),

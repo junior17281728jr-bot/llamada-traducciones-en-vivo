@@ -73,9 +73,9 @@ describe('<CallProvider> / useCall()', () => {
 describe('<App>', () => {
   beforeEach(() => resetSessionForTests());
 
-  it('mounts the shell with the placeholder call screen', () => {
+  it('mounts the shell: without a session it asks the operator to log in', () => {
     render(<App />);
     expect(screen.getByRole('heading', { name: 'Telecomway' })).toBeInTheDocument();
-    expect(screen.getByTestId('call-screen-placeholder')).toHaveTextContent('Sin llamada activa');
+    expect(screen.getByTestId('login-screen')).toBeInTheDocument();
   });
 });

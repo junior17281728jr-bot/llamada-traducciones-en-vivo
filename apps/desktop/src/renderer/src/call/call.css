@@ -178,7 +178,8 @@
   background: var(--color-simulated-soft);
 }
 .chip--degraded,
-.chip--unconfigured {
+.chip--unconfigured,
+.chip--configured {
   color: var(--color-warn);
   border-color: var(--color-warn);
 }
@@ -406,6 +407,31 @@
   border: 1px dashed var(--color-simulated);
   border-radius: var(--radius-lg);
   padding: var(--space-3) var(--space-4);
+}
+
+/* "Modo audio del PC" start card (shown on the Llamada tab while there is no call). */
+.local-start__steps {
+  margin: 0;
+  padding-left: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+.local-start__devices {
+  margin: 0;
+}
+.local-start__device {
+  font-weight: var(--weight-medium);
+}
+.local-start__device--missing,
+.local-start__device--absent {
+  color: var(--color-warn);
+}
+.local-start__device--unknown {
+  color: var(--color-text-muted);
+  font-weight: var(--weight-regular);
 }
 
 @media (max-width: 880px) {

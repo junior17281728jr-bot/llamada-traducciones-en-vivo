@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { WebSocket, type RawData } from 'ws';
 import {
   AudioFrameType,
+  INTERNAL_BYTES_PER_SECOND,
   MAX_CONTROL_MESSAGE_LENGTH,
   PROTOCOL_VERSION,
   SERVER_ACCEPTED_FRAME_TYPES,
@@ -33,20 +34,49 @@ export interface OperatorSocketDeps {
   manager: CallManager;
   channelKind: ServerConfig['channel'];
   debug?: DebugHooks;
+  /** Whether `call.startLocal` ("modo audio del PC") works on this server. Defaults to what the manager supports. */
+  localAudio?: boolean;
   systemStatus: () => Extract<ServerMessage, { type: 'system.status' }>;
 }
 
 const AUTH_TIMEOUT_MS = 10_000;
 const MAX_BAD_FRAMES = 50;
 const BACKPRESSURE_BYTES = 512 * 1024;
+/** Audio accepted per frame type: 1.5x real time, with a burst of 5 s to absorb jitter. Anything beyond is dropped. */
+export const AUDIO_RATE_BYTES_PER_SECOND = Math.round(INTERNAL_BYTES_PER_SECOND * 1.5);
+export const AUDIO_BURST_BYTES = INTERNAL_BYTES_PER_SECOND * 5;
+
+/** Token bucket in bytes: the microphone cannot run faster than real time, so a flood is never recorded or transcribed. */
+class AudioBudget {
+  private allowance = AUDIO_BURST_BYTES;
+  private last: number;
+  dropped = 0;
+  constructor(private readonly now: () => number) {
+    this.last = now();
+  }
+  accept(bytes: number): boolean {
+    const t = this.now();
+    this.allowance = Math.min(AUDIO_BURST_BYTES, this.allowance + ((t - this.last) / 1000) * AUDIO_RATE_BYTES_PER_SECOND);
+    this.last = t;
+    if (bytes > this.allowance) {
+      this.dropped += 1;
+      return false;
+    }
+    this.allowance -= bytes;
+    return true;
+  }
+}
 
 /** One operator app connection: authenticates, then relays control messages and microphone audio. */
 export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: OperatorSocketDeps): void {
   const ip = req.socket.remoteAddress ?? 'unknown';
   let operatorId: string | null = null;
+  let closed = false;
   let badFrames = 0;
   let tokens = 200;
   let lastRefill = Date.now();
+  const budgets = { [AudioFrameType.OperatorMic]: new AudioBudget(Date.now), [AudioFrameType.PassengerLocal]: new AudioBudget(Date.now) };
+  let floodWarned = false;
 
   const sendMessage = (message: ServerMessage): void => {
     if (ws.readyState === WebSocket.OPEN) ws.send(encodeMessage(message));
@@ -63,10 +93,16 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), AUTH_TIMEOUT_MS);
 
   const admit = async (account: OperatorAccount, token: string): Promise<void> => {
+    if (closed) return;
     const result = await deps.manager.connectOperator({ id: account.id, name: account.name, role: account.role }, link);
     if (!result.ok) {
       sendMessage({ type: 'auth.error', code: 'already_connected', message: 'Este usuario ya tiene otra sesión abierta' });
       ws.close(4003, 'already connected');
+      return;
+    }
+    if (closed) {
+      // The socket went away while the operator was being registered: no ghost operator stays behind.
+      deps.manager.disconnectOperator(account.id);
       return;
     }
     clearTimeout(authTimer);
@@ -81,10 +117,13 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
         channel: deps.channelKind,
         debug: deps.debug !== undefined,
         maxCalls: deps.config.maxConcurrentCalls,
+        localAudio: deps.localAudio ?? deps.manager.startLocal !== undefined,
       },
     });
     sendMessage(deps.manager.presenceMessage());
     sendMessage(deps.systemStatus());
+    // A reconnection in mid-call: the call is sent again so the screen shows it (nothing happens otherwise).
+    deps.manager.resyncOperator(account.id);
   };
 
   const authenticate = async (message: Extract<ClientMessage, { type: 'auth.login' | 'auth.resume' }>): Promise<void> => {
@@ -103,18 +142,18 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
       await admit(account, message.token);
       return;
     }
-    const key = `${ip}|${message.username.toLowerCase()}`;
-    if (deps.limiter.isBlocked(key)) {
+    if (deps.limiter.isClientBlocked(ip, message.username)) {
       sendMessage({ type: 'auth.error', code: 'rate_limited', message: 'Demasiados intentos fallidos. Espera unos minutos.' });
       return;
     }
     const account = await deps.operators.authenticate(message.username, message.password);
+    if (closed) return;
     if (!account) {
-      deps.limiter.recordFailure(key);
+      deps.limiter.recordClientFailure(ip, message.username);
       sendMessage({ type: 'auth.error', code: 'invalid_credentials', message: 'Usuario o contraseña incorrectos' });
       return;
     }
-    deps.limiter.recordSuccess(key);
+    deps.limiter.recordClientSuccess(ip, message.username);
     await admit(account, deps.sessions.create(account.id).token);
   };
 
@@ -170,6 +209,14 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
         if (++badFrames >= MAX_BAD_FRAMES) ws.close(1008, 'too many bad frames');
         return;
       }
+      const budget = budgets[frame.value.type as keyof typeof budgets];
+      if (budget && !budget.accept(frame.value.pcm.byteLength)) {
+        if (!floodWarned) {
+          floodWarned = true;
+          deps.logger.warn('Audio por encima del tiempo real; se descartan tramas', { operatorId, type: frame.value.type });
+        }
+        return;
+      }
       if (frame.value.type === AudioFrameType.OperatorMic) deps.manager.pushOperatorAudio(operatorId, frame.value.pcm.slice());
       else if (frame.value.type === AudioFrameType.PassengerLocal) deps.manager.pushPassengerLocalAudio?.(operatorId, frame.value.pcm.slice());
       return;
@@ -206,6 +253,7 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
   });
 
   ws.on('close', () => {
+    closed = true;
     clearTimeout(authTimer);
     if (operatorId) deps.manager.disconnectOperator(operatorId);
   });

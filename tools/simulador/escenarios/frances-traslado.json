@@ -1,0 +1,27 @@
+{
+  "nombre": "Traslado al hotel (francés)",
+  "descripcion": "Pasajera francesa que acaba de aterrizar y no encuentra el conductor del traslado que tenía reservado.",
+  "desde": "+33612345678",
+  "idioma": "fr",
+  "lineas": [
+    {
+      "texto": "Bonjour, je viens d'atterrir et je ne trouve pas le chauffeur de mon transfert vers l'hôtel.",
+      "pausaMs": 1200,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "La réservation est au nom de Martin, pour quatre personnes, avec deux valises chacune.",
+      "pausaMs": 900,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Nous sommes devant la sortie du terminal deux, près du point d'information. Combien de temps faut-il attendre ?",
+      "pausaMs": 900,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "D'accord, nous restons ici. Merci beaucoup pour votre aide, au revoir.",
+      "pausaMs": 1000
+    }
+  ]
+}

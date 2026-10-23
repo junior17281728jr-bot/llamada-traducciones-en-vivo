@@ -1,11 +1,13 @@
 import './call.css';
 import { useEffect, useState } from 'react';
+import type { Direction } from '@tw/shared';
 import { useCall } from '../core/CallContext';
 import { useLanguageCatalog } from '../core/catalog';
 import type { ActiveCall } from '../core/types';
 import { DebugSay } from './DebugSay';
 import { Lane } from './Lane';
 import { LanguagePanel } from './LanguagePanel';
+import { LOCAL_MODE_UNVERIFIED_WARNING } from './LocalCallStart';
 import { StatusStrip } from './StatusStrip';
 import { END_REASON_LABELS, formatDuration, langName, passengerHearsLabel, passengerLanguageLabel } from './labels';
 
@@ -26,6 +28,12 @@ const STATE_TEXT: Record<ActiveCall['state'], string> = {
   dialing: 'Marcando…',
   active: 'En llamada',
   ended: 'Llamada terminada',
+};
+
+const DIRECTION_TEXT: Record<Direction, string> = {
+  inbound: 'Llamada entrante',
+  outbound: 'Llamada saliente',
+  local: 'Audio del PC',
 };
 
 const MIC_WARNING: Partial<Record<ActiveCall['mic'], string>> = {
@@ -52,14 +60,15 @@ export function CallScreen() {
   }
 
   const ended = call.state === 'ended';
+  const local = call.direction === 'local';
   const settings = call.settings;
   return (
-    <section className="call" aria-label="Llamada" data-testid="call-screen" data-state={call.state}>
+    <section className="call" aria-label="Llamada" data-testid="call-screen" data-state={call.state} data-direction={call.direction}>
       <header className="call__bar">
         <div className="call__who">
-          <span className={`pill pill--${call.state}`}>{STATE_TEXT[call.state]}</span>
+          <span className={`pill pill--${call.state}`}>{local && !ended ? 'Traduciendo' : STATE_TEXT[call.state]}</span>
           <strong className="call__number">{call.remoteNumber}</strong>
-          <span className="call__direction">{call.direction === 'inbound' ? 'Llamada entrante' : 'Llamada saliente'}</span>
+          <span className="call__direction">{DIRECTION_TEXT[call.direction]}</span>
           {elapsed !== null ? <span className="call__timer" aria-label="Duración">{formatDuration(elapsed)}</span> : null}
           {call.simulated ? <span className="badge badge--simulated">Simulado</span> : null}
         </div>
@@ -70,7 +79,7 @@ export function CallScreen() {
                 {call.muted ? 'Quitar silencio' : 'Silenciar micrófono'}
               </button>
               <button type="button" className="button button--danger" onClick={() => actions.hangup()}>
-                Colgar
+                {local ? 'Terminar traducción' : 'Colgar'}
               </button>
             </>
           ) : (
@@ -81,9 +90,18 @@ export function CallScreen() {
         </div>
       </header>
 
+      {local && !ended ? (
+        <p className="notice notice--warn" role="note" data-testid="local-call-notice">
+          <strong>Audio del PC.</strong> Usa auriculares: con altavoces, la voz traducida vuelve a entrar por el micrófono. La llamada se contesta y se
+          cuelga en {call.remoteNumber}; aquí solo se traduce su audio a través de los cables virtuales. {LOCAL_MODE_UNVERIFIED_WARNING}
+        </p>
+      ) : null}
+
       {ended && call.endedReason ? (
         <p className="notice notice--info" role="status">
-          {END_REASON_LABELS[call.endedReason]}. Puedes ver la transcripción abajo o en el historial.
+          {local && call.endedReason === 'hangup_operator' ? 'Traducción terminada' : END_REASON_LABELS[call.endedReason]}. Puedes ver la
+          transcripción abajo o en el historial.
+          {local ? ' Recuerda colgar también en el otro programa.' : ''}
         </p>
       ) : null}
 
@@ -97,7 +115,12 @@ export function CallScreen() {
           call={call}
           source={levels.passenger}
           colorToken="--color-passenger"
-          subtitle={<span data-testid="passenger-language">{passengerLanguageLabel(call)}</span>}
+          subtitle={
+            <span data-testid="passenger-language">
+              {passengerLanguageLabel(call)}
+              {local ? ' · voz por el cable A' : ''}
+            </span>
+          }
         />
         <Lane
           speaker="operator"

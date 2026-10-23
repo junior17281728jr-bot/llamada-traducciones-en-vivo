@@ -5,8 +5,10 @@
  */
 import { loadConfig } from '../config.js';
 import { OperatorStore } from '../auth.js';
+import { loadDotEnv } from '../dotenv.js';
 
 async function run(): Promise<void> {
+  loadDotEnv();
   const args = process.argv.slice(2);
   const username = args[0];
   const option = (name: string): string | undefined => {

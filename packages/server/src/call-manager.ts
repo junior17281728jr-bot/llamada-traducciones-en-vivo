@@ -1,4 +1,6 @@
 import {
+  AudioFrameType,
+  encodeAudioFrame,
   languageSettingsFromPreferences,
   mergeLanguageSettings,
   normalizeLanguageCode,
@@ -21,12 +23,18 @@ import {
   type TranscriptStore,
   type Unsubscribe,
 } from '@tw/shared';
-import { CallSession, type OperatorLink } from './call-session.js';
+import { CallSession, DETACHED_LINK, type OperatorLink } from './call-session.js';
+import type { DesktopAudioCall, LocalCallChannel } from './channel/desktop-audio.js';
 import type { ServerConfig } from './config.js';
 
 export interface CallManagerDeps {
-  config: Pick<ServerConfig, 'maxConcurrentCalls' | 'ringTimeoutSeconds' | 'autoAccept' | 'fallbackLang'>;
+  config: Pick<ServerConfig, 'maxConcurrentCalls' | 'ringTimeoutSeconds' | 'autoAccept' | 'fallbackLang'> & {
+    /** Seconds a call survives a dropped operator connection while the app reconnects (0 = hang up at once). Default 10. */
+    reconnectGraceSeconds?: number;
+  };
   channel: CallChannel;
+  /** "Modo audio del PC": when present, `call.startLocal` and `PassengerLocal` frames are accepted. */
+  localChannel?: LocalCallChannel;
   pipelines: PipelineFactory;
   transcripts: TranscriptStore;
   recordings: RecordingStore | null;
@@ -46,6 +54,8 @@ interface ManagedOperator {
   status: OperatorStatus;
   currentCallId: string | null;
   lastFreeAt: number;
+  /** Set while the operator's connection is down and a call of theirs waits for them to come back. */
+  detached: { timer: ReturnType<typeof setTimeout> } | null;
 }
 
 interface Ringing {
@@ -54,6 +64,8 @@ interface Ringing {
   tried: Set<string>;
   operatorId: string | null;
   timer: ReturnType<typeof setTimeout> | null;
+  /** `answer()` is in progress: a second accept for the same call is refused instead of starting a second session. */
+  answering: boolean;
   /** The passenger hung up while it was ringing or being answered. */
   gone: boolean;
   offEnded: Unsubscribe;
@@ -68,7 +80,12 @@ interface PendingOutbound {
   offs: Unsubscribe[];
 }
 
-export type ConnectResult = { ok: true; info: OperatorInfo } | { ok: false; code: 'already_connected' };
+export type ConnectResult =
+  /** `resumed`: the operator came back within the grace period and still has their call. */
+  | { ok: true; info: OperatorInfo; resumed: boolean }
+  | { ok: false; code: 'already_connected' };
+
+const DEFAULT_RECONNECT_GRACE_SECONDS = 10;
 
 /**
  * Decides which operator gets which call and keeps the number of simultaneous calls under the limit.
@@ -80,10 +97,31 @@ export class CallManager {
   private readonly ringing = new Map<string, Ringing>();
   private readonly pending = new Map<string, PendingOutbound>();
   private readonly sessions = new Map<string, CallSession>();
+  /** Local ("modo audio del PC") calls in progress, by call id. */
+  private readonly localCalls = new Map<string, DesktopAudioCall>();
+  /** Outbound calls being placed (between the checks and `channel.dial()` resolving); they count as lines in use. */
+  private dialing = 0;
   private offIncoming: Unsubscribe | null = null;
   private stopped = false;
 
-  constructor(private readonly deps: CallManagerDeps) {}
+  /**
+   * "Modo audio del PC". Both are only defined when a local channel was provided, so the operator socket
+   * can tell the app whether `call.startLocal` exists on this server.
+   */
+  readonly startLocal?: (operatorId: string, label: string, langHint?: string, languages?: PartialLanguageSettings) => Promise<void>;
+  readonly pushPassengerLocalAudio?: (operatorId: string, pcm: PcmChunk) => void;
+
+  constructor(private readonly deps: CallManagerDeps) {
+    if (deps.localChannel) {
+      this.startLocal = (operatorId, label, langHint, languages) => this.doStartLocal(operatorId, label, langHint, languages);
+      this.pushPassengerLocalAudio = (operatorId, pcm) => this.doPushPassengerLocalAudio(operatorId, pcm);
+    }
+  }
+
+  /** True when this server accepts "modo audio del PC" calls. */
+  get localAudioAvailable(): boolean {
+    return this.deps.localChannel !== undefined;
+  }
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
@@ -96,6 +134,9 @@ export class CallManager {
   async stop(): Promise<void> {
     this.stopped = true;
     this.offIncoming?.();
+    for (const operator of this.operators.values()) {
+      if (operator.detached) clearTimeout(operator.detached.timer);
+    }
     for (const ringing of [...this.ringing.values()]) {
       this.clearRinging(ringing);
       await ringing.call.reject().catch(() => undefined);
@@ -111,7 +152,11 @@ export class CallManager {
   }
 
   get activeCalls(): number {
-    return this.sessions.size + this.pending.size + this.ringing.size;
+    return this.sessions.size + this.pending.size + this.ringing.size + this.dialing;
+  }
+
+  private graceMs(): number {
+    return (this.deps.config.reconnectGraceSeconds ?? DEFAULT_RECONNECT_GRACE_SECONDS) * 1000;
   }
 
   get maxCalls(): number {
@@ -123,9 +168,11 @@ export class CallManager {
   // ---------------------------------------------------------------------------
 
   async connectOperator(account: { id: string; name: string; role: OperatorRole }, link: OperatorLink): Promise<ConnectResult> {
-    if (this.operators.has(account.id)) return { ok: false, code: 'already_connected' };
+    const resumed = this.reattach(account.id, link);
+    if (resumed) return resumed;
     const preferences = await this.deps.preferences.get(account.id);
-    if (this.operators.has(account.id)) return { ok: false, code: 'already_connected' };
+    const late = this.reattach(account.id, link);
+    if (late) return late;
     const operator: ManagedOperator = {
       id: account.id,
       name: account.name,
@@ -135,10 +182,35 @@ export class CallManager {
       status: 'available',
       currentCallId: null,
       lastFreeAt: this.now(),
+      detached: null,
     };
     this.operators.set(account.id, operator);
     this.broadcastPresence();
-    return { ok: true, info: this.info(operator) };
+    return { ok: true, info: this.info(operator), resumed: false };
+  }
+
+  /** An operator already registered: refused, unless their connection dropped and a call of theirs is waiting. */
+  private reattach(operatorId: string, link: OperatorLink): ConnectResult | null {
+    const existing = this.operators.get(operatorId);
+    if (!existing) return null;
+    if (!existing.detached) return { ok: false, code: 'already_connected' };
+    clearTimeout(existing.detached.timer);
+    existing.detached = null;
+    existing.link = link;
+    const session = existing.currentCallId ? this.sessions.get(existing.currentCallId) : undefined;
+    session?.attachLink(link);
+    this.broadcastPresence();
+    return { ok: true, info: this.info(existing), resumed: true };
+  }
+
+  /** After the app received `auth.ok`: the current call (if any) is sent again so the screen shows it. */
+  resyncOperator(operatorId: string): void {
+    this.sessionOf(operatorId)?.resync();
+  }
+
+  /** Sends `message` to every connected operator (e.g. a changed `system.status`). */
+  broadcast(message: ServerMessage): void {
+    for (const operator of this.operators.values()) operator.link.send(message);
   }
 
   /** Called when an operator's preferences change while connected. */
@@ -147,14 +219,40 @@ export class CallManager {
     if (operator) operator.preferences = await this.deps.preferences.get(operatorId);
   }
 
+  /**
+   * The operator's socket closed. A call in progress is kept for a grace period (the app reconnects on its
+   * own and resumes with its token); a call being offered moves on to the next operator at once and an
+   * outbound call still ringing is cancelled.
+   */
   disconnectOperator(operatorId: string): void {
     const operator = this.operators.get(operatorId);
+    if (!operator || operator.detached) return;
+    const session = [...this.sessions.values()].find((candidate) => candidate.operatorId === operatorId);
+    if (session && !session.isEnded && this.graceMs() > 0 && !this.stopped) {
+      operator.link = DETACHED_LINK;
+      session.detachLink();
+      operator.detached = { timer: setTimeout(() => this.dropOperator(operatorId, 'connection_lost'), this.graceMs()) };
+      this.deps.logger.warn('Operador desconectado en mitad de una llamada; se espera su reconexión', {
+        operatorId,
+        callId: session.callId,
+        graceSeconds: this.graceMs() / 1000,
+      });
+      this.broadcastPresence();
+      return;
+    }
+    this.dropOperator(operatorId, 'hangup_operator');
+  }
+
+  /** Removes the operator for good and ends whatever they had with `reason`. */
+  private dropOperator(operatorId: string, reason: CallEndReason): void {
+    const operator = this.operators.get(operatorId);
     if (!operator) return;
+    if (operator.detached) clearTimeout(operator.detached.timer);
     const session = [...this.sessions.values()].find((candidate) => candidate.operatorId === operatorId);
     const pending = [...this.pending.values()].find((candidate) => candidate.operatorId === operatorId);
     const offered = [...this.ringing.values()].find((candidate) => candidate.operatorId === operatorId);
     this.operators.delete(operatorId);
-    if (session) void session.hangupByOperator();
+    if (session) void session.terminate(reason);
     if (pending) void pending.call.hangup();
     if (offered) {
       offered.tried.add(operatorId);
@@ -194,6 +292,7 @@ export class CallManager {
       tried: new Set(),
       operatorId: null,
       timer: null,
+      answering: false,
       gone: false,
       offEnded: () => undefined,
     };
@@ -255,16 +354,19 @@ export class CallManager {
     const operator = this.operators.get(operatorId);
     const ringing = this.ringing.get(callId);
     if (!operator) return;
-    if (!ringing || ringing.operatorId !== operatorId) {
+    if (!ringing || ringing.operatorId !== operatorId || ringing.answering) {
+      // Also a second "Contestar" for a call being answered: one answer, one session.
       this.sendError(operator, 'unknown_call', 'Esa llamada ya no está disponible', callId);
       return;
     }
     this.clearTimer(ringing);
+    ringing.answering = true;
     try {
       await ringing.call.answer();
     } catch (error) {
       this.deps.logger.error('No se pudo contestar la llamada', { callId, error: String(error) });
       this.sendError(operator, 'internal_error', 'No se pudo contestar la llamada', callId);
+      ringing.answering = false;
       ringing.tried.add(operatorId);
       ringing.operatorId = null;
       this.release(operator);
@@ -276,8 +378,6 @@ export class CallManager {
       return;
     }
     this.clearRinging(ringing);
-    operator.status = 'in_call';
-    operator.currentCallId = callId;
     await this.startSession(operator, ringing.call, { ...ringing.record, operatorId }, languageSettingsFromPreferences(operator.preferences, this.deps.config.fallbackLang));
   }
 
@@ -307,24 +407,38 @@ export class CallManager {
       this.sendError(operator, 'max_calls_reached', 'Todas las líneas están ocupadas');
       return;
     }
-    const can = await this.deps.channel.canDial(number);
+    // Reserved before anything asynchronous: a second `call.dial` (double click) and other operators see the
+    // operator busy and the line taken while the channel is still being asked.
+    operator.status = 'ringing';
+    this.dialing += 1;
+    this.broadcastPresence();
+    const abandon = (code: ErrorCode, message: string): void => {
+      this.dialing -= 1;
+      this.release(operator);
+      this.sendError(operator, code, message);
+      this.broadcastPresence();
+    };
+    let can: Awaited<ReturnType<CallChannel['canDial']>>;
+    try {
+      can = await this.deps.channel.canDial(number);
+    } catch (error) {
+      this.deps.logger.error('No se pudo comprobar el número', { error: String(error) });
+      return abandon('dial_failed', 'No se pudo realizar la llamada');
+    }
     if (!can.allowed) {
       const code: ErrorCode =
         can.reason === 'permission_required' ? 'dial_permission_required' : can.reason === 'invalid_number' ? 'invalid_number' : 'dial_failed';
-      this.sendError(operator, code, can.message ?? dialMessage(can.reason));
-      return;
+      return abandon(code, can.message ?? dialMessage(can.reason));
     }
-    operator.status = 'ringing';
-    this.broadcastPresence();
+    if (!this.operators.has(operatorId) || this.stopped) return abandon('dial_failed', 'No se pudo realizar la llamada');
     let call: ChannelCall;
     try {
       call = await this.deps.channel.dial(number);
     } catch (error) {
       this.deps.logger.error('No se pudo marcar', { error: String(error) });
-      this.release(operator);
-      this.sendError(operator, 'dial_failed', 'No se pudo realizar la llamada');
-      return;
+      return abandon('dial_failed', 'No se pudo realizar la llamada');
     }
+    this.dialing -= 1;
     const base = languageSettingsFromPreferences(operator.preferences, this.deps.config.fallbackLang);
     const settings = languages ? mergeLanguageSettings(base, languages) : base;
     const record = this.baseRecord(call, operatorId);
@@ -348,7 +462,6 @@ export class CallManager {
           void call.hangup();
           return;
         }
-        operator.status = 'in_call';
         void this.startSession(operator, call, record, settings);
       }),
       call.onEnded((end) => {
@@ -367,6 +480,56 @@ export class CallManager {
   }
 
   // ---------------------------------------------------------------------------
+  // "Modo audio del PC" (local calls)
+  // ---------------------------------------------------------------------------
+
+  /** True when `callId` is a local call still in progress. */
+  isLocalCall(callId: string): boolean {
+    return this.localCalls.has(callId);
+  }
+
+  private async doStartLocal(operatorId: string, label: string, langHint?: string, languages?: PartialLanguageSettings): Promise<void> {
+    const local = this.deps.localChannel;
+    const operator = this.operators.get(operatorId);
+    if (!local || !operator) return;
+    if (operator.status !== 'available') {
+      this.sendError(operator, 'operator_busy', 'Ya estás en una llamada');
+      return;
+    }
+    if (this.activeCalls >= this.maxCalls) {
+      this.sendError(operator, 'max_calls_reached', 'Todas las líneas están ocupadas');
+      return;
+    }
+    const hint = normalizeLanguageCode(langHint) ?? undefined;
+    let call: DesktopAudioCall;
+    try {
+      call = local.startLocalCall({
+        operatorId,
+        label: label.trim() || 'Audio del PC',
+        ...(hint ? { langHint: hint } : {}),
+        // The operator's translated voice goes back to the app, which plays it into the cable the other program listens to.
+        onToPassenger: (pcm) => operator.link.sendBinary(encodeAudioFrame(AudioFrameType.TranslatedToPassenger, pcm)),
+      });
+    } catch (error) {
+      this.deps.logger.error('No se pudo iniciar el modo audio del PC', { error: String(error) });
+      this.sendError(operator, 'dial_failed', 'No se pudo iniciar el modo audio del PC');
+      return;
+    }
+    await call.answer();
+    this.localCalls.set(call.id, call);
+    const base = languageSettingsFromPreferences(operator.preferences, this.deps.config.fallbackLang);
+    const settings = languages ? mergeLanguageSettings(base, languages) : base;
+    await this.startSession(operator, call, this.baseRecord(call, operatorId), settings, local.simulated);
+  }
+
+  /** Passenger audio captured from the cable: only accepted while the operator's current call is local. */
+  private doPushPassengerLocalAudio(operatorId: string, pcm: PcmChunk): void {
+    const operator = this.operators.get(operatorId);
+    if (!operator?.currentCallId) return;
+    this.localCalls.get(operator.currentCallId)?.pushPassengerAudio(pcm);
+  }
+
+  // ---------------------------------------------------------------------------
   // Active calls
   // ---------------------------------------------------------------------------
 
@@ -377,7 +540,13 @@ export class CallManager {
       return;
     }
     const pending = this.pending.get(callId);
-    if (pending && pending.operatorId === operatorId) void pending.call.hangup();
+    if (pending && pending.operatorId === operatorId) {
+      void pending.call.hangup();
+      return;
+    }
+    // Nothing to hang up (the call ended while the app was away): say so, so the screen can be closed.
+    const operator = this.operators.get(operatorId);
+    if (operator) this.sendError(operator, 'unknown_call', 'Esa llamada ya ha terminado', callId);
   }
 
   setLanguages(operatorId: string, callId: string, patch: PartialLanguageSettings): void {
@@ -387,10 +556,6 @@ export class CallManager {
   mute(operatorId: string, callId: string, muted: boolean): void {
     this.ownedSession(operatorId, callId)?.setMuted(muted);
   }
-
-  /** "Modo audio del PC" (filled in by the desktop-audio channel work). */
-  startLocal?: (operatorId: string, label: string, langHint?: string, languages?: PartialLanguageSettings) => Promise<void>;
-  pushPassengerLocalAudio?: (operatorId: string, pcm: PcmChunk) => void;
 
   pushOperatorAudio(operatorId: string, pcm: PcmChunk): void {
     const operator = this.operators.get(operatorId);
@@ -421,7 +586,10 @@ export class CallManager {
     call: ChannelCall,
     record: CallRecord,
     settings: ReturnType<typeof languageSettingsFromPreferences>,
+    simulated: boolean = this.deps.channel.simulated,
   ): Promise<void> {
+    operator.status = 'in_call';
+    operator.currentCallId = call.id;
     const session = new CallSession({
       call,
       operatorId: operator.id,
@@ -431,13 +599,14 @@ export class CallManager {
       transcripts: this.deps.transcripts,
       recordings: this.deps.recordings,
       logger: this.deps.logger,
-      simulated: this.deps.channel.simulated,
+      simulated,
       record,
       ...(this.deps.now ? { now: this.deps.now } : {}),
       onEnded: ({ callId }) => {
         this.sessions.delete(callId);
+        this.localCalls.delete(callId);
         const current = this.operators.get(operator.id);
-        if (current) this.release(current);
+        if (current && current.currentCallId === callId) this.release(current);
         this.broadcastPresence();
       },
     });

@@ -16,9 +16,14 @@
     "build": "tsc -b && npm run build:renderer -w @tw/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
+    "test:e2e": "npm run test:e2e -w @tw/desktop",
     "clean": "tsc -b --clean",
-    "dev:server": "npm run dev -w @tw/server",
-    "dev:desktop": "npm run dev -w @tw/desktop"
+    "dev:server": "tsc -b packages/server && npm run dev -w @tw/server",
+    "start:server": "tsc -b packages/server && npm run start -w @tw/server",
+    "dev:desktop": "npm run dev -w @tw/desktop",
+    "dev:electron": "npm run dev:electron -w @tw/desktop",
+    "sim": "npm run sim -w @tw/simulador --",
+    "operador:crear": "npm run operador:crear -w @tw/server --"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

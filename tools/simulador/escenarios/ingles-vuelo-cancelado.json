@@ -1,0 +1,32 @@
+{
+  "nombre": "Vuelo cancelado: pide hotel (inglés)",
+  "descripcion": "Pasajero británico cuyo vuelo de conexión acaba de cancelarse; pide alojamiento para esta noche y cómo llegar al hotel.",
+  "desde": "+447700900123",
+  "idioma": "en",
+  "lineas": [
+    {
+      "texto": "Hello, good evening. I'm calling because my connecting flight to Manchester has just been cancelled.",
+      "pausaMs": 1500,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "The next available flight is tomorrow morning, so I need a hotel for tonight. Does the airline cover that?",
+      "pausaMs": 1000,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "My booking reference is X R four seven two B, and I'm travelling with my wife and a small child.",
+      "pausaMs": 800,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Is there a shuttle to the hotel, or do I need to take a taxi and claim the cost later?",
+      "pausaMs": 800,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Thank you very much, that's really helpful. Goodbye.",
+      "pausaMs": 1000
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
 import {
   API_PATHS,
+  DIRECTIONS,
   LoginRequestSchema,
   PutKeysRequestSchema,
   PutPreferencesRequestSchema,
@@ -12,6 +14,7 @@ import {
   type CallDetailResponse,
   type CallRecord,
   type ConnectionTester,
+  type Direction,
   type KeysResponse,
   type ListCallsResponse,
   type LanguageCatalogProvider,
@@ -27,7 +30,8 @@ import {
 import type { CallManager } from './call-manager.js';
 import type { ServerConfig } from './config.js';
 import { LoginRateLimiter, OperatorStore, SessionStore, type OperatorAccount } from './auth.js';
-import { HttpError, parseRange, readJsonBody, sendError, sendJson } from './http-utils.js';
+import { HttpError, SECURITY_HEADERS, parseRange, readJsonBody, sendError, sendJson } from './http-utils.js';
+import type { LegStream } from './stores/recordings.js';
 
 export interface ApiDeps {
   config: ServerConfig;
@@ -39,7 +43,8 @@ export interface ApiDeps {
   secrets: SecretsStore;
   preferences: PreferencesStore;
   transcripts: TranscriptStore;
-  recordings: RecordingStore | null;
+  /** `openLeg` (streaming) is used when the store offers it; otherwise the WAV is built in memory with `read`. */
+  recordings: (RecordingStore & { openLeg?(callId: string, leg: RecordingLeg): Promise<LegStream | null> }) | null;
   catalog: LanguageCatalogProvider;
   tester: ConnectionTester;
   /** Called after keys change so the server can refresh service statuses. */
@@ -54,8 +59,17 @@ interface Authed {
 
 const SECRET_VALUE = /^[^\s\u0000-\u001f\u007f]{1,4096}$/;
 
-function clientKey(req: IncomingMessage, username: string): string {
-  return `${req.socket.remoteAddress ?? 'unknown'}|${username.toLowerCase()}`;
+function clientAddress(req: IncomingMessage): string {
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+/** A path segment with a malformed percent-escape is a client error, not a crash. */
+function decodeSegment(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw new HttpError(400, 'bad_request', 'La dirección contiene caracteres no válidos');
+  }
 }
 
 /** Resolves the bearer token of a request to an account, or throws 401. */
@@ -87,35 +101,46 @@ function canSee(account: OperatorAccount, call: CallRecord): boolean {
   return account.role === 'admin' || call.operatorId === account.id;
 }
 
+/** Minimum length of a query before it is compared with the beginning of a call id (ids are random UUIDs). */
+const MIN_ID_PREFIX_LENGTH = 8;
+
+/**
+ * Free-text search of the history: the number (ignoring spaces) or the call id. A short query never
+ * matches an id by substring, otherwise random ids would match digits such as "999" by chance.
+ */
+export function matchesCallQuery(call: { id: string; remoteNumber: string }, q: string | undefined): boolean {
+  if (!q) return true;
+  const compact = q.replace(/\s/g, '');
+  if (compact.length > 0 && call.remoteNumber.replace(/\s/g, '').toLowerCase().includes(compact)) return true;
+  const id = call.id.toLowerCase();
+  return id === q || (q.length >= MIN_ID_PREFIX_LENGTH && id.startsWith(q));
+}
+
 export async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, deps: ApiDeps): Promise<boolean> {
   const { pathname } = url;
   const method = req.method ?? 'GET';
   if (!pathname.startsWith('/api/')) return false;
 
+  // Unauthenticated liveness only: what the server is made of (providers, channel, simulated or not) is told to
+  // authenticated operators in `auth.ok` and `system.status`, never to anyone who can reach the port.
   if (pathname === '/api/health' && method === 'GET') {
-    sendJson(res, 200, {
-      ok: true,
-      providers: deps.config.providers,
-      channel: deps.config.channel,
-      simulatedProviders: deps.simulated.providers,
-      simulatedChannel: deps.simulated.channel,
-    });
+    sendJson(res, 200, { ok: true });
     return true;
   }
 
   if (pathname === API_PATHS.login && method === 'POST') {
     const parsed = LoginRequestSchema.safeParse(await readJsonBody(req, 4096));
     if (!parsed.success) throw new HttpError(400, 'bad_request', 'Faltan el usuario o la contraseña');
-    const key = clientKey(req, parsed.data.username);
-    if (deps.limiter.isBlocked(key)) {
+    const address = clientAddress(req);
+    if (deps.limiter.isClientBlocked(address, parsed.data.username)) {
       throw new HttpError(429, 'rate_limited', 'Demasiados intentos fallidos. Espera unos minutos.');
     }
     const account = await deps.operators.authenticate(parsed.data.username, parsed.data.password);
     if (!account) {
-      deps.limiter.recordFailure(key);
+      deps.limiter.recordClientFailure(address, parsed.data.username);
       throw new HttpError(401, 'invalid_credentials', 'Usuario o contraseña incorrectos');
     }
-    deps.limiter.recordSuccess(key);
+    deps.limiter.recordClientSuccess(address, parsed.data.username);
     const { token, expiresAt } = deps.sessions.create(account.id);
     const prefs = await deps.preferences.get(account.id);
     const body: LoginResponse = {
@@ -212,7 +237,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const testMatch = /^\/api\/settings\/test\/([^/]+)$/.exec(pathname);
   if (testMatch && method === 'POST') {
     requireAdmin(auth);
-    const service = decodeURIComponent(testMatch[1]!);
+    const service = decodeSegment(testMatch[1]!);
     if (!(TEST_SERVICES as readonly string[]).includes(service)) throw new HttpError(404, 'unknown_service', 'Servicio desconocido');
     sendJson(res, 200, await deps.tester.test(service as TestService));
     return true;
@@ -226,16 +251,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     const direction = url.searchParams.get('direction');
     const before = toTimestamp(url.searchParams.get('before'));
     const requestedOperator = url.searchParams.get('operatorId') ?? undefined;
-    if (direction !== null && direction !== 'inbound' && direction !== 'outbound') throw new HttpError(400, 'bad_query', 'Dirección no válida');
+    if (direction !== null && !(DIRECTIONS as readonly string[]).includes(direction)) throw new HttpError(400, 'bad_query', 'Dirección no válida');
     const all = await deps.transcripts.listCalls({
       limit: 500,
       ...(before !== undefined ? { before } : {}),
-      ...(direction ? { direction } : {}),
+      ...(direction ? { direction: direction as Direction } : {}),
       ...(auth.account.role === 'admin' ? (requestedOperator ? { operatorId: requestedOperator } : {}) : { operatorId: auth.account.id }),
     });
     const calls = all
       .filter((call) => (from === undefined || call.createdAt >= from) && (to === undefined || call.createdAt <= to))
-      .filter((call) => !q || call.id.toLowerCase().includes(q) || call.remoteNumber.replace(/\s/g, '').includes(q.replace(/\s/g, '')))
+      .filter((call) => matchesCallQuery(call, q))
       .slice(0, limit);
     const body: ListCallsResponse = { calls };
     sendJson(res, 200, body);
@@ -244,7 +269,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   const callMatch = /^\/api\/calls\/([^/]+)$/.exec(pathname);
   if (callMatch && method === 'GET') {
-    const call = await findCall(decodeURIComponent(callMatch[1]!), auth, deps);
+    const call = await findCall(decodeSegment(callMatch[1]!), auth, deps);
     const body: CallDetailResponse = { call, segments: await deps.transcripts.getSegments(call.id) };
     sendJson(res, 200, body);
     return true;
@@ -252,27 +277,47 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
 
   const audioMatch = /^\/api\/calls\/([^/]+)\/audio\/([^/]+)$/.exec(pathname);
   if (audioMatch && method === 'GET') {
-    const call = await findCall(decodeURIComponent(audioMatch[1]!), auth, deps);
-    const leg = decodeURIComponent(audioMatch[2]!);
+    const call = await findCall(decodeSegment(audioMatch[1]!), auth, deps);
+    const leg = decodeSegment(audioMatch[2]!);
     if (!(RECORDING_LEGS as readonly string[]).includes(leg)) throw new HttpError(404, 'not_found', 'Tramo desconocido');
-    const wav = deps.recordings ? await deps.recordings.read(call.id, leg as RecordingLeg) : null;
-    if (!wav) throw new HttpError(404, 'no_recording', 'Esta llamada no tiene grabación');
-    const range = parseRange(req.headers.range, wav.byteLength);
-    const base = { 'Content-Type': RECORDING_CONTENT_TYPE, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store' };
+    const source = await openRecording(deps, call.id, leg as RecordingLeg);
+    if (!source) throw new HttpError(404, 'no_recording', 'Esta llamada no tiene grabación');
+    const range = parseRange(req.headers.range, source.byteLength);
+    // Same hardening headers as the JSON answers; the CSP keeps the WAV from being embedded anywhere.
+    const base = { ...SECURITY_HEADERS, 'Content-Type': RECORDING_CONTENT_TYPE, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store' };
     if (range === 'invalid') {
-      res.writeHead(416, { ...base, 'Content-Range': `bytes */${wav.byteLength}` });
+      res.writeHead(416, { ...base, 'Content-Range': `bytes */${source.byteLength}` });
       res.end();
-    } else if (range) {
-      res.writeHead(206, { ...base, 'Content-Range': `bytes ${range.start}-${range.end}/${wav.byteLength}`, 'Content-Length': range.end - range.start + 1 });
-      res.end(Buffer.from(wav.subarray(range.start, range.end + 1)));
-    } else {
-      res.writeHead(200, { ...base, 'Content-Length': wav.byteLength });
-      res.end(Buffer.from(wav));
+      return true;
     }
+    const start = range ? range.start : 0;
+    const end = range ? range.end : source.byteLength - 1;
+    const headers = range ? { ...base, 'Content-Range': `bytes ${start}-${end}/${source.byteLength}` } : base;
+    res.writeHead(range ? 206 : 200, { ...headers, 'Content-Length': end - start + 1 });
+    // Streamed from disk in small pieces: a long call never has to fit in memory, however many players ask.
+    const stream = source.stream(start, end);
+    stream.on('error', (error) => {
+      deps.logger.error('No se pudo leer la grabación', { callId: call.id, leg, error: String(error) });
+      res.destroy();
+    });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
     return true;
   }
 
   throw new HttpError(404, 'not_found', 'No existe esa ruta');
+}
+
+/** The recording leg as a byte source: streamed by the file store, or the in-memory WAV of any other store. */
+async function openRecording(deps: ApiDeps, callId: string, leg: RecordingLeg): Promise<LegStream | null> {
+  if (!deps.recordings) return null;
+  if (deps.recordings.openLeg) return deps.recordings.openLeg(callId, leg);
+  const wav = await deps.recordings.read(callId, leg);
+  if (!wav) return null;
+  return {
+    byteLength: wav.byteLength,
+    stream: (start, end) => Readable.from([Buffer.from(wav.subarray(start, end + 1))]),
+  };
 }
 
 async function findCall(id: string, auth: Authed, deps: ApiDeps): Promise<CallRecord> {

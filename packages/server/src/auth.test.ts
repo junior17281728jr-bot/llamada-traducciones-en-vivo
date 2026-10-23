@@ -67,4 +67,25 @@ describe('LoginRateLimiter', () => {
     limiter.recordSuccess('ip|ana');
     expect(limiter.isBlocked('ip|ana')).toBe(false);
   });
+
+  it('also blocks an address that rotates user names, and never grows without bound', () => {
+    let now = 0;
+    const limiter = new LoginRateLimiter(5, 1000, () => now, 8, 50);
+    for (let i = 0; i < 8; i++) {
+      expect(limiter.isClientBlocked('10.0.0.1', `usuario${i}`)).toBe(false);
+      limiter.recordClientFailure('10.0.0.1', `usuario${i}`);
+    }
+    // Eight different names from one address: the ninth attempt is refused even with a name never tried.
+    expect(limiter.isClientBlocked('10.0.0.1', 'otro')).toBe(true);
+    expect(limiter.isClientBlocked('10.0.0.2', 'otro')).toBe(false);
+    // A success for one pair does not launder the address.
+    limiter.recordClientSuccess('10.0.0.1', 'usuario0');
+    expect(limiter.isClientBlocked('10.0.0.1', 'usuario0')).toBe(true);
+    now = 1001;
+    expect(limiter.isClientBlocked('10.0.0.1', 'otro')).toBe(false);
+
+    // Bounded table: thousands of distinct keys never keep more than `maxEntries` entries.
+    for (let i = 0; i < 1000; i++) limiter.recordClientFailure(`10.1.${i >> 8}.${i & 255}`, `u${i}`);
+    expect(limiter.size).toBeLessThanOrEqual(50);
+  });
 });

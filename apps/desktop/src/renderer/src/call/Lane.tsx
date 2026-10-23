@@ -21,7 +21,7 @@ function SegmentRow({ segment }: SegmentRowProps) {
         segment.translatedText === null ? (
           <p className="segment__translation segment__translation--missing">No se pudo traducir; se muestra el original.</p>
         ) : sameLanguage ? (
-          <p className="segment__translation segment__translation--same">Ya estaba en el idioma de destino ({langName(segment.translatedLang)}).</p>
+          <p className="segment__translation segment__translation--same">Mismo idioma ({langName(segment.translatedLang)}): no hace falta traducir.</p>
         ) : (
           <p className="segment__translation">
             <span className="segment__lang segment__lang--target">→ {segment.translatedLang?.toUpperCase()}</span>
@@ -50,8 +50,17 @@ interface LaneProps {
  * audio and the transcript (original and translation) of what that person says. Colour is never the
  * only cue: every lane also has its name, an icon-like marker and the word "Hablando".
  */
+/** What the lane says when the server relays the ORIGINAL voice of this direction (same language on both ends). */
+export function directAudioLabel(call: ActiveCall, speaker: Speaker): string | null {
+  const direct = call.directAudio;
+  if (!direct) return null;
+  if (speaker === 'passenger') return direct.passengerToOperator ? 'Oyes su voz original (mismo idioma)' : null;
+  return direct.operatorToPassenger ? 'El pasajero oye tu voz original (mismo idioma)' : null;
+}
+
 export function Lane({ speaker, name, call, source, colorToken, subtitle, warning }: LaneProps) {
   const lane = call.lanes[speaker];
+  const direct = directAudioLabel(call, speaker);
   const segments = call.segments.filter((segment) => segment.speaker === speaker);
   const listRef = useRef<HTMLOListElement | null>(null);
   useEffect(() => {
@@ -73,6 +82,11 @@ export function Lane({ speaker, name, call, source, colorToken, subtitle, warnin
         <h2 className="lane__name">{name}</h2>
         <p className="lane__subtitle">{subtitle}</p>
         {call.simulated ? <span className="badge badge--simulated">Simulado</span> : null}
+        {direct ? (
+          <span className="chip chip--accent" data-testid={`direct-audio-${speaker}`} title="Los dos habláis el mismo idioma: se reproduce la voz tal cual, sin sintetizarla.">
+            {direct}
+          </span>
+        ) : null}
         <span className={`lane__speaking${lane.speaking ? ' lane__speaking--on' : ''}`} role="status" aria-live="polite">
           {lane.speaking ? 'Hablando' : ''}
         </span>

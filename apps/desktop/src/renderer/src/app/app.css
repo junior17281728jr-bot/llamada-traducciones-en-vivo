@@ -1,0 +1,179 @@
+/* App shell: login, top bar, incoming-call alert, dialer and the idle call panel. Tokens from theme/tokens.css. */
+
+/* Login */
+.login {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4) var(--gutter);
+}
+.login__card {
+  width: 100%;
+  max-width: 420px;
+  gap: var(--space-4);
+}
+.login__header {
+  text-align: center;
+}
+.login__title {
+  font-size: var(--text-xl);
+  margin: 0 0 var(--space-1);
+  letter-spacing: 0.02em;
+}
+.login__subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+.login__footer {
+  margin: 0;
+  text-align: center;
+}
+
+/* Top bar */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-4);
+}
+.topbar__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-bold);
+}
+.topbar__logo {
+  color: var(--color-passenger);
+  letter-spacing: -0.2em;
+  margin-right: 0.2em;
+}
+.topbar__logo::first-letter {
+  color: var(--color-passenger);
+}
+.topbar__who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.topbar__connection {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.topbar__connection--disconnected {
+  color: var(--color-danger);
+  font-weight: var(--weight-medium);
+}
+.topbar__connection--connecting,
+.topbar__connection--reconnecting {
+  color: var(--color-warn);
+}
+.topbar__services {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.topbar__logout {
+  margin-left: auto;
+}
+
+/* Incoming call alert: always on top of the tabs */
+.incoming {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+  background: var(--color-ok-soft);
+  border: 2px solid var(--color-ok);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+.incoming__text p {
+  margin: 0;
+}
+.incoming__title {
+  display: flex;
+  align-items: center;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ok);
+}
+.incoming__pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  margin-right: var(--space-2);
+  animation: incoming-pulse 1.2s ease-in-out infinite;
+}
+@keyframes incoming-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--color-ok-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 8px var(--color-ok-soft);
+  }
+}
+.incoming__from {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--text-xl);
+}
+.incoming__meta {
+  margin-top: var(--space-1);
+}
+.incoming__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* Dialer */
+.dialer__form {
+  max-width: 640px;
+}
+.dialer__number {
+  font-size: var(--text-xl);
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.dialer__mode-help {
+  margin: 0;
+}
+
+/* Idle call panel */
+.idle__card {
+  max-width: 720px;
+}
+.idle__operators {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .topbar__logout {
+    margin-left: 0;
+  }
+  .incoming__actions {
+    width: 100%;
+  }
+  .incoming__actions .button {
+    flex: 1 1 0;
+  }
+}

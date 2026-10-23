@@ -63,6 +63,12 @@ export interface DirectionPipelineOptions {
   maxBufferedMs: number;
   sttRetries: number;
   sttRetryDelayMs: number;
+  /**
+   * After `sttRetries` failed attempts in a row the transcription stops retrying for a while (doubling from the
+   * minimum up to the maximum) instead of hammering the service with every audio chunk. A settings change resets it.
+   */
+  sttBackoffMinMs: number;
+  sttBackoffMaxMs: number;
   /** How long the `error` stage stays visible. */
   errorDisplayMs: number;
   /** Do not translate a phrase that is already in the target language. */
@@ -81,6 +87,8 @@ export const DEFAULT_DIRECTION_PIPELINE_OPTIONS: DirectionPipelineOptions = {
   maxBufferedMs: 10_000,
   sttRetries: 3,
   sttRetryDelayMs: 300,
+  sttBackoffMinMs: 5000,
+  sttBackoffMaxMs: 60_000,
   errorDisplayMs: 3000,
   skipSameLanguage: true,
   controller: {},
@@ -108,6 +116,28 @@ interface Waiter {
 
 const toError = (value: unknown): Error => (value instanceof Error ? value : new Error(String(value)));
 
+/** Language the passenger speaks when it is known for sure: fixed by the operator, or detected and usable. */
+function spokenLanguageFor(settings: LanguageSettings, state: LanguageState): LanguageCode | null {
+  if (settings.passengerSpeaks.mode === 'fixed') return settings.passengerSpeaks.lang;
+  const heard = heardLanguageFor({ ...settings, passengerHears: { mode: 'follow' } }, state);
+  return heard.usable ? heard.lang : null;
+}
+
+/**
+ * True when both ends of `direction` share one language for sure: the operator's language equals the
+ * language the passenger speaks (passenger -> operator) or the language the passenger hears (operator ->
+ * passenger). The call session then relays the ORIGINAL voice and this pipeline synthesises nothing; both
+ * decide from the same inputs, so what one relays the other never speaks.
+ */
+export function directAudioFor(direction: PipelineDirection, settings: LanguageSettings, state: LanguageState): boolean {
+  if (direction === 'passenger_to_operator') {
+    const spoken = spokenLanguageFor(settings, state);
+    return spoken !== null && spoken === settings.operatorLang;
+  }
+  const heard = heardLanguageFor(settings, state);
+  return heard.usable && heard.lang === settings.operatorLang;
+}
+
 export class TranslationDirectionPipeline implements DirectionPipeline {
   readonly direction: PipelineDirection;
 
@@ -131,6 +161,8 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
   private sttLang: LanguageCode | undefined;
   private sttOffsetMs = 0;
   private sttOpening: Promise<void> | null = null;
+  private sttBackoffMs = 0;
+  private sttBackoffUntil = 0;
   private reopening = false;
   private pending: PcmChunk[] = [];
   private pendingMs = 0;
@@ -155,6 +187,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
   private errorUntil = 0;
   private errorDetail: string | undefined;
   private lastStage: PipelineStage = 'idle';
+  private lastStageDetail: string | undefined;
 
   private readonly latencies: LatencySummary[] = [];
   private closed = false;
@@ -228,6 +261,13 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
     this.prewarmTargets();
     this.maybeReopenStt();
     this.releaseHold();
+    // A changed setting (or key) deserves a fresh transcription attempt at once.
+    this.sttBackoffUntil = 0;
+    if (this.pending.length > 0) void this.ensureStt();
+  }
+
+  getLanguageState(): LanguageState {
+    return this.passengerState;
   }
 
   setPassengerLanguageState(state: LanguageState): void {
@@ -308,7 +348,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
   }
 
   private ensureStt(): Promise<void> {
-    if (this.stt || this.closed) return Promise.resolve();
+    if (this.stt || this.closed || this.options.now() < this.sttBackoffUntil) return Promise.resolve();
     this.sttOpening ??= this.connectStt().finally(() => {
       this.sttOpening = null;
     });
@@ -325,10 +365,21 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
           return;
         }
         this.attachStt(session, lang);
+        this.sttBackoffMs = 0;
+        this.sttBackoffUntil = 0;
         return;
       } catch (error) {
+        if (this.closed) return;
+        if (attempt >= this.options.sttRetries) {
+          this.sttBackoffMs = Math.min(this.options.sttBackoffMaxMs, Math.max(this.options.sttBackoffMinMs, this.sttBackoffMs * 2));
+          this.sttBackoffUntil = this.options.now() + this.sttBackoffMs;
+          this.reportError(
+            toError(error),
+            `La transcripción no está disponible (${toError(error).message}); se volverá a intentar en ${Math.round(this.sttBackoffMs / 1000)} s`,
+          );
+          return;
+        }
         this.reportError(toError(error), 'No se pudo conectar la transcripción');
-        if (attempt >= this.options.sttRetries || this.closed) return;
         await this.sleep(this.options.sttRetryDelayMs * (attempt + 1));
         if (this.closed) return;
       }
@@ -454,14 +505,26 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
       const target = passengerSide ? job.settings.operatorLang : await this.resolveHeardTarget(job);
       if (this.closed) return;
 
+      // Same language on both ends. `relay` mirrors what the call session decides from the same inputs: while
+      // it is true the session forwards the ORIGINAL voice, so nothing is synthesised here.
+      const relay = directAudioFor(this.direction, job.settings, this.passengerState);
       const fixedSpoken = job.settings.passengerSpeaks.mode === 'fixed' ? job.settings.passengerSpeaks.lang : null;
-      const source: LanguageCode | null = passengerSide ? (fixedSpoken ?? job.sttLang) : job.settings.operatorLang;
+      const source: LanguageCode | null = passengerSide ? (fixedSpoken ?? (relay ? target : job.sttLang)) : job.settings.operatorLang;
       const passthrough = this.options.skipSameLanguage && source !== null && source === target;
+      // Automatic detection needs the translator's language signal too: a phrase the STT already places in the
+      // operator's language still goes to the translator (which returns it unchanged) until the detection is
+      // CONFIRMED, and a phrase the STT places in ANOTHER language while the original voice is relayed goes as
+      // well, so a change of language is noticed and the relay stops. Once confirmed and agreeing, nothing is sent.
+      const needsTranslator =
+        !passthrough ||
+        (passengerSide &&
+          fixedSpoken === null &&
+          (!relay || this.passengerState.status !== 'confirmed' || (job.sttLang !== null && job.sttLang !== target)));
 
       let translatedText: string | null = null;
       let detectedFrom: string | undefined;
       let failed = false;
-      if (passthrough) {
+      if (!needsTranslator) {
         translatedText = job.text;
       } else {
         const started = this.options.now();
@@ -511,7 +574,8 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
         createdAt: this.options.now(),
       });
 
-      if (!failed && !passthrough && translatedText) {
+      // Spoken unless the session is relaying the original voice for this direction (same language, known for sure).
+      if (!failed && !relay && translatedText) {
         this.awaitingAudio += 1;
         const text = translatedText;
         this.speechChain = this.speechChain
@@ -673,13 +737,16 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
 
   private updateStage(segmentId?: string): void {
     const stage = this.currentStage();
-    if (stage === this.lastStage) return;
+    const detail = stage === 'error' ? this.errorDetail : undefined;
+    // A new error while the error stage is already showing still deserves its own event (the text changed).
+    if (stage === this.lastStage && detail === this.lastStageDetail) return;
     this.lastStage = stage;
+    this.lastStageDetail = detail;
     this.stages.emit({
       direction: this.direction,
       stage,
       ...(segmentId ? { segmentId } : {}),
-      ...(stage === 'error' && this.errorDetail ? { detail: this.errorDetail } : {}),
+      ...(detail ? { detail } : {}),
     });
   }
 

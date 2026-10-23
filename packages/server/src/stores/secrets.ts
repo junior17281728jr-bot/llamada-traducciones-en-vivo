@@ -27,11 +27,16 @@ export function maskedLast4(value: string): string | null {
   return value.length >= 12 ? value.slice(-4) : null;
 }
 
+export const UNDECRYPTABLE_WARNING =
+  'No se puede descifrar la clave guardada (¿ha cambiado SECRETS_KEY o el archivo secrets.key?). Hasta que se guarde de nuevo no se usa; si hay una en el entorno, se usa esa.';
+
 /**
  * API keys encrypted at rest (AES-256-GCM). The key comes from SECRETS_KEY (derived with scrypt) or, when
  * that is empty, from a random key file with 0600 permissions next to the data. Whoever can read both
- * files on the server can decrypt the keys: protect the data folder like the keys themselves.
+ * files on the server can decrypt the keys: protect the data folder like the keys themselves (in
+ * production keep SECRETS_KEY out of DATA_DIR, so a copy of the folder alone reveals nothing).
  * Values only come out of `resolve`, for server code; nothing here returns a value to a client.
+ * A value that no longer decrypts (the key changed) is reported as configured-but-unusable, never thrown.
  */
 export class FileSecretsStore implements SecretsStore {
   private readonly path: string;
@@ -77,6 +82,7 @@ export class FileSecretsStore implements SecretsStore {
   async getMasked(name: SecretKeyName): Promise<MaskedSecret> {
     assertName(name);
     const saved = await this.readSaved(name);
+    if (saved && 'undecryptable' in saved) return { configured: true, last4: null, savedAt: saved.savedAt, source: 'settings', warning: UNDECRYPTABLE_WARNING };
     if (saved) return { configured: true, last4: maskedLast4(saved.value), savedAt: saved.savedAt, source: 'settings' };
     const fromEnv = this.env[name]?.trim();
     if (fromEnv) return { configured: true, last4: maskedLast4(fromEnv), savedAt: null, source: 'env' };
@@ -90,18 +96,31 @@ export class FileSecretsStore implements SecretsStore {
 
   async resolve(name: SecretKeyName): Promise<string | undefined> {
     assertName(name);
-    return (await this.readSaved(name))?.value ?? (this.env[name]?.trim() || undefined);
+    const saved = await this.readSaved(name);
+    if (saved && 'value' in saved) return saved.value;
+    return this.env[name]?.trim() || undefined;
   }
 
-  private async readSaved(name: SecretKeyName): Promise<{ value: string; savedAt: number } | null> {
+  /** True when a saved value exists but cannot be decrypted with the current key. */
+  async isUndecryptable(name: SecretKeyName): Promise<boolean> {
+    assertName(name);
+    const saved = await this.readSaved(name);
+    return saved !== null && 'undecryptable' in saved;
+  }
+
+  private async readSaved(name: SecretKeyName): Promise<{ value: string; savedAt: number } | { undecryptable: true; savedAt: number } | null> {
     const file = await this.load();
     const entry = file.values[name];
     if (!entry) return null;
-    const key = await this.getKey(file);
-    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(entry.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
-    const value = Buffer.concat([decipher.update(Buffer.from(entry.data, 'base64')), decipher.final()]).toString('utf8');
-    return { value, savedAt: entry.savedAt };
+    try {
+      const key = await this.getKey(file);
+      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(entry.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(entry.tag, 'base64'));
+      const value = Buffer.concat([decipher.update(Buffer.from(entry.data, 'base64')), decipher.final()]).toString('utf8');
+      return { value, savedAt: entry.savedAt };
+    } catch {
+      return { undecryptable: true, savedAt: entry.savedAt };
+    }
   }
 
   private async load(): Promise<SecretsFile> {

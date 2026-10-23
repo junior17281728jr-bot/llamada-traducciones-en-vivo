@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_OPERATOR_PREFERENCES, generateSinePcm16, parseWav, type CallRecord, type TranscriptSegment } from '@tw/shared';
+import { DEFAULT_OPERATOR_PREFERENCES, generateSinePcm16, parseWav, type CallRecord, type RecordingLeg, type TranscriptSegment } from '@tw/shared';
 import { tempDataDir } from '../test-utils.js';
 import { FilePreferencesStore } from './preferences.js';
 import { FileRecordingStore } from './recordings.js';
@@ -34,11 +34,22 @@ describe('FileSecretsStore', () => {
     expect(await reopened.getMasked('ELEVENLABS_API_KEY')).toMatchObject({ configured: false, source: 'none' });
   });
 
-  it('works with a passphrase and refuses to decrypt with another one', async () => {
+  it('works with a passphrase; with another one the saved value is reported as unusable instead of crashing', async () => {
     const dir = await tempDataDir();
     await new FileSecretsStore(dir, 'frase-secreta', {}).set('ANTHROPIC_API_KEY', KEY);
     expect(await new FileSecretsStore(dir, 'frase-secreta', {}).resolve('ANTHROPIC_API_KEY')).toBe(KEY);
-    await expect(new FileSecretsStore(dir, 'otra-frase', {}).resolve('ANTHROPIC_API_KEY')).rejects.toThrow();
+
+    const wrong = new FileSecretsStore(dir, 'otra-frase', { ANTHROPIC_API_KEY: 'env-fallback-0123456789' });
+    expect(await wrong.resolve('ANTHROPIC_API_KEY')).toBe('env-fallback-0123456789');
+    expect(await wrong.isUndecryptable('ANTHROPIC_API_KEY')).toBe(true);
+    const masked = await wrong.getMasked('ANTHROPIC_API_KEY');
+    expect(masked).toMatchObject({ configured: true, last4: null, source: 'settings' });
+    expect(masked.warning).toContain('SECRETS_KEY');
+    expect(await new FileSecretsStore(dir, 'otra-frase', {}).resolve('ANTHROPIC_API_KEY')).toBeUndefined();
+    // Saving again with the current key makes it usable.
+    await wrong.set('ANTHROPIC_API_KEY', KEY);
+    expect(await wrong.resolve('ANTHROPIC_API_KEY')).toBe(KEY);
+    expect((await wrong.getMasked('ANTHROPIC_API_KEY')).warning).toBeUndefined();
   });
 
   it('does not reveal any part of short secrets and rejects unknown names', async () => {
@@ -154,5 +165,48 @@ describe('FileRecordingStore', () => {
     expect(await store.deleteOlderThan(info.createdAt)).toBe(0);
     expect(await store.deleteOlderThan(info.createdAt + 1)).toBe(1);
     expect(await store.get('call1')).toBeNull();
+  });
+
+  it('streams every leg from disk byte-for-byte like the in-memory WAV, including odd ranges of the mixed leg', async () => {
+    const store = new FileRecordingStore(await tempDataDir());
+    const writer = await store.open('call2');
+    const passenger = generateSinePcm16(300, 700);
+    const operator = generateSinePcm16(600, 250);
+    for (let offset = 0; offset < passenger.byteLength; offset += 640) writer.write('passenger', passenger.slice(offset, offset + 640));
+    writer.write('operator', operator);
+    await writer.close();
+    const collect = async (iterable: AsyncIterable<Buffer>): Promise<Buffer> => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of iterable) chunks.push(chunk);
+      return Buffer.concat(chunks);
+    };
+    for (const leg of ['passenger', 'operator', 'mixed'] as RecordingLeg[]) {
+      const expected = Buffer.from((await store.read('call2', leg))!);
+      const source = (await store.openLeg('call2', leg))!;
+      expect(source.byteLength).toBe(expected.byteLength);
+      expect((await collect(source.stream(0, source.byteLength - 1))).equals(expected)).toBe(true);
+      const ranges: [number, number][] = [[0, 0], [0, 43], [43, 43], [43, 44], [44, 44], [45, 46], [1, 2], [1001, 1002], [1000, 1003], [44, expected.byteLength - 1], [expected.byteLength - 3, expected.byteLength - 1], [expected.byteLength - 1, expected.byteLength - 1]];
+      for (const [from, to] of ranges) {
+        expect((await collect(source.stream(from, to))).equals(expected.subarray(from, to + 1)), `${leg} ${from}-${to}`).toBe(true);
+      }
+    }
+    expect(await store.openLeg('nope', 'mixed')).toBeNull();
+    // One leg only: the mixed leg is that leg.
+    const single = await store.open('call3');
+    single.write('operator', operator);
+    await single.close();
+    const mixed = (await store.openLeg('call3', 'mixed'))!;
+    expect((await collect(mixed.stream(0, mixed.byteLength - 1))).equals(Buffer.from((await store.read('call3', 'mixed'))!))).toBe(true);
+  });
+
+  it('drops audio instead of queueing it without limit when the disk cannot keep up', async () => {
+    const store = new FileRecordingStore(await tempDataDir(), { maxPendingBytes: 1000 });
+    const writer = await store.open('call4');
+    // Written synchronously before the file is even open: everything beyond the pending limit is dropped.
+    for (let i = 0; i < 50; i++) writer.write('passenger', generateSinePcm16(300, 20));
+    const info = await writer.close();
+    expect(info.bytes).toBeGreaterThan(0);
+    expect(info.bytes).toBeLessThan(50 * 640);
+    expect(parseWav((await store.read('call4', 'passenger'))!).pcm.byteLength).toBe(info.bytes);
   });
 });

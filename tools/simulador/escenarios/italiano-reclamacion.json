@@ -1,0 +1,32 @@
+{
+  "nombre": "Reclamación por un cobro duplicado (italiano)",
+  "descripcion": "Pasajero italiano que reclama un cargo cobrado dos veces por el equipaje facturado y pide el reembolso.",
+  "desde": "+393123456789",
+  "idioma": "it",
+  "lineas": [
+    {
+      "texto": "Buongiorno, chiamo per contestare un addebito sulla mia carta di credito.",
+      "pausaMs": 1200,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Mi avete addebitato due volte il supplemento per il bagaglio da stiva: sessanta euro invece di trenta.",
+      "pausaMs": 900,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Il numero della prenotazione è K L nove due cinque, volo di ieri da Roma. Ho la ricevuta davanti a me.",
+      "pausaMs": 900,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Vorrei il rimborso del secondo addebito e una conferma per email, per favore.",
+      "pausaMs": 800,
+      "esperarRespuesta": true
+    },
+    {
+      "texto": "Va bene, aspetto la vostra email. Grazie, arrivederci.",
+      "pausaMs": 1000
+    }
+  ]
+}

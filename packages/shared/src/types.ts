@@ -49,6 +49,8 @@ export const CALL_END_REASONS = [
   'failed',
   'cancelled',
   'server_shutdown',
+  /** The operator's app lost its connection and did not come back within the grace period. */
+  'connection_lost',
 ] as const;
 export type CallEndReason = (typeof CALL_END_REASONS)[number];
 
@@ -91,8 +93,12 @@ export interface PipelineStageEvent {
   detail?: string;
 }
 
-export const SERVICE_STATUSES = ['ok', 'degraded', 'down', 'simulated', 'unconfigured'] as const;
-/** Health of one external dependency. `simulated` means a local mock, never a real service. */
+export const SERVICE_STATUSES = ['ok', 'degraded', 'down', 'simulated', 'unconfigured', 'configured'] as const;
+/**
+ * Health of one external dependency. `simulated` means a local mock, never a real service.
+ * `configured` means a key exists but nothing has been checked against the service yet; `ok` is only
+ * reported after a successful connection test.
+ */
 export type ServiceStatus = (typeof SERVICE_STATUSES)[number];
 
 // ---------------------------------------------------------------------------

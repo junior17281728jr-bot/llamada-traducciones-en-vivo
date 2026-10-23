@@ -1,9 +1,12 @@
 /** Entry point of the server process (`npm run dev:server`). */
 import { ConfigError, loadConfig } from './config.js';
 import { createApplication } from './application.js';
+import { loadDotEnv } from './dotenv.js';
 import { NotConfiguredError } from './providers.js';
 
 async function main(): Promise<void> {
+  // `.env` next to where `npm run` was typed (or TW_ENV_FILE); variables already set win over the file.
+  const envFile = loadDotEnv();
   const config = loadConfig();
   const app = await createApplication(config);
   const port = await app.start();
@@ -15,6 +18,14 @@ async function main(): Promise<void> {
     console.log(`Simulador de pasajeros: ws://${config.host}:${port}/sim (usa "npm run simulador -w @tw/simulador")`);
   }
   console.log(`Carpeta de datos: ${config.dataDir}`);
+  if (envFile.path) console.log(`Configuración leída de ${envFile.path} (${envFile.applied.length} variables; las ya definidas en el entorno tienen prioridad)`);
+  else console.log('Sin archivo .env: se usan las variables del entorno y los valores por defecto (copia .env.example a .env para cambiarlos).');
+  if (config.providers === 'elevenlabs') {
+    console.log('PROVEEDORES REALES (ElevenLabs + Claude): UNVERIFIED contra los servicios reales; comprueba las claves con «Probar conexión» en Ajustes.');
+  }
+  if (config.channel === 'desktop-audio') {
+    console.log('CHANNEL=desktop-audio: sin línea telefónica; solo el modo audio del PC (ver docs/MODO-AUDIO-PC.md).');
+  }
   if (app.generatedAdminPassword) {
     console.log('');
     console.log('Se ha creado el administrador inicial. Guarda esta contraseña, no se volverá a mostrar:');

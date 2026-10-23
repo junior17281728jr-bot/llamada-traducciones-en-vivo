@@ -8,10 +8,12 @@ import {
   type LanguageStateEvent,
   type PipelineStageEvent,
   type SttProvider,
+  type SttSession,
   type SttSessionOptions,
   type TranscriptSegment,
+  UNKNOWN_LANGUAGE_STATE,
 } from '@tw/shared';
-import { TranslationDirectionPipeline, type DirectionPipelineOptions } from './direction-pipeline.js';
+import { TranslationDirectionPipeline, directAudioFor, type DirectionPipelineOptions } from './direction-pipeline.js';
 import { UtteranceBus } from './mock/utterance-bus.js';
 import { ScriptedStt } from './mock/scripted-stt.js';
 import { MockTextTranslator, type MockTranslatorOptions } from './mock/mock-translator.js';
@@ -155,14 +157,82 @@ describe('passenger to operator', () => {
     await r.operator.close();
   });
 
-  it('passes a phrase through untranslated when it is already in the operator language', async () => {
+  it('a passenger who already speaks the operator language is heard: synthesised until the detection is sure, then the original voice is relayed', async () => {
     const r = rig();
-    say(r, 'passenger', 'hola buenos días necesito ayuda', 'es');
-    await waitFor(() => finals(r, 'passenger').length === 1, 'the final segment');
-    expect(finals(r, 'passenger')[0]).toMatchObject({ originalLang: 'es', translatedLang: 'es', translatedText: 'hola buenos días necesito ayuda' });
-    expect(r.translator.calls).toHaveLength(0);
+    const ES_1 = 'hola buenos días necesito ayuda';
+    const ES_2 = 'necesito un hotel para esta noche por favor';
+    // Phrase 1: the STT says Spanish but nothing is confirmed yet. The translator identifies the language (second
+    // signal) and returns the text unchanged; the operator hears it synthesised because nobody relays the original yet.
+    say(r, 'passenger', ES_1, 'es');
+    await waitFor(() => finals(r, 'passenger').length === 1, 'the first final segment');
+    expect(finals(r, 'passenger')[0]).toMatchObject({ originalLang: 'es', translatedLang: 'es', translatedText: ES_1 });
+    expect(r.translator.calls).toHaveLength(1);
+    await waitFor(() => r.stages.passenger.at(-1)?.stage === 'idle' && r.out.passenger.length > 0, 'the synthesised voice');
+    expect(bytesEqual(concatPcm(r.out.passenger), voice(ES_1, 'es'))).toBe(true);
+    expect(directAudioFor('passenger_to_operator', DEFAULT_LANGUAGE_SETTINGS, UNKNOWN_LANGUAGE_STATE)).toBe(false);
+    expect(directAudioFor('passenger_to_operator', DEFAULT_LANGUAGE_SETTINGS, r.languageStates.at(-1)!.state)).toBe(true);
+
+    // Phrase 2: Spanish is now usable, so the session relays the original voice and nothing is synthesised; the
+    // translator is still asked once more (second signal) so the language becomes CONFIRMED.
+    const audioBefore = r.out.passenger.length;
+    say(r, 'passenger', ES_2, 'es');
+    await waitFor(() => finals(r, 'passenger').length === 2, 'the second final segment');
+    expect(finals(r, 'passenger')[1]).toMatchObject({ originalLang: 'es', translatedLang: 'es', translatedText: ES_2 });
+    expect(r.translator.calls).toHaveLength(2);
+    await waitFor(() => r.languageStates.at(-1)?.state.status === 'confirmed', 'the confirmation');
     await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(r.out.passenger).toHaveLength(audioBefore);
+
+    // Phrase 3: confirmed and relayed: no translator call at all.
+    say(r, 'passenger', 'gracias por su ayuda con la reserva', 'es');
+    await waitFor(() => finals(r, 'passenger').length === 3, 'the third final segment');
+    expect(r.translator.calls).toHaveLength(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(r.out.passenger).toHaveLength(audioBefore);
+    await r.passenger.close();
+    await r.operator.close();
+  });
+
+  it('Manual mode with the same language on both sides: nothing is translated or synthesised in either direction (the original voice is relayed)', async () => {
+    const same: LanguageSettings = { operatorLang: 'es', passengerSpeaks: { mode: 'fixed', lang: 'es' }, passengerHears: { mode: 'fixed', lang: 'es' } };
+    expect(directAudioFor('passenger_to_operator', same, UNKNOWN_LANGUAGE_STATE)).toBe(true);
+    expect(directAudioFor('operator_to_passenger', same, UNKNOWN_LANGUAGE_STATE)).toBe(true);
+    const r = rig({ settings: same });
+    say(r, 'passenger', 'hola buenos días necesito ayuda', 'es');
+    say(r, 'operator', 'buenos días le atiende telecomway', 'es');
+    await waitFor(() => finals(r, 'passenger').length === 1 && finals(r, 'operator').length === 1, 'both segments');
+    expect(finals(r, 'passenger')[0]).toMatchObject({ translatedLang: 'es', translatedText: 'hola buenos días necesito ayuda' });
+    expect(finals(r, 'operator')[0]).toMatchObject({ translatedLang: 'es', translatedText: 'buenos días le atiende telecomway' });
+    expect(r.translator.calls).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 60));
     expect(r.out.passenger).toHaveLength(0);
+    expect(r.out.operator).toHaveLength(0);
+    await r.passenger.close();
+    await r.operator.close();
+  });
+
+  it('while the original voice is relayed, a change to another language is still noticed and the translation resumes', async () => {
+    const r = rig({ pipeline: { controller: { switchSegments: 2 } } });
+    say(r, 'passenger', 'hola buenos días necesito ayuda', 'es');
+    await waitFor(() => finals(r, 'passenger').length === 1, 'the first Spanish phrase');
+    say(r, 'passenger', 'necesito un hotel para esta noche por favor', 'es');
+    await waitFor(() => finals(r, 'passenger').length === 2 && r.languageStates.at(-1)?.state.status === 'confirmed', 'Spanish confirmed');
+    expect(directAudioFor('passenger_to_operator', DEFAULT_LANGUAGE_SETTINGS, r.languageStates.at(-1)!.state)).toBe(true);
+    const calls = r.translator.calls.length;
+    // English phrases while Spanish is relayed: translated on screen (and used as evidence) but not spoken, because
+    // the operator is hearing the original voice; after `switchSegments` the detection changes and speech resumes.
+    say(r, 'passenger', EN, 'en');
+    await waitFor(() => finals(r, 'passenger').length === 3, 'the first English phrase');
+    expect(r.translator.calls.length).toBe(calls + 1);
+    expect(finals(r, 'passenger')[2]).toMatchObject({ translatedLang: 'es', translatedText: EN_ES });
+    say(r, 'passenger', EN, 'en');
+    await waitFor(() => finals(r, 'passenger').length === 4, 'the second English phrase');
+    await waitFor(() => r.languageStates.some((e) => e.notice?.kind === 'changed' && e.notice.lang === 'en'), 'the language change');
+    expect(directAudioFor('passenger_to_operator', DEFAULT_LANGUAGE_SETTINGS, r.languageStates.at(-1)!.state)).toBe(false);
+    const spokenBefore = concatPcm(r.out.passenger).byteLength;
+    say(r, 'passenger', EN, 'en');
+    await waitFor(() => finals(r, 'passenger').length === 5, 'the third English phrase');
+    await waitFor(() => concatPcm(r.out.passenger).byteLength >= spokenBefore + voice(EN_ES, 'es').byteLength, 'the translated voice again');
     await r.passenger.close();
     await r.operator.close();
   });
@@ -345,6 +415,49 @@ describe('language change during a call', () => {
 });
 
 describe('lifecycle', () => {
+  it('stops retrying a transcription that cannot be opened and backs off instead of hammering the service with every chunk', async () => {
+    let clock = 0;
+    let opens = 0;
+    const broken: SttProvider = {
+      openSession: (): Promise<SttSession> => {
+        opens += 1;
+        return Promise.reject(new Error('401 clave rechazada'));
+      },
+    };
+    const details: string[] = [];
+    const pipe = new TranslationDirectionPipeline(
+      { callId: CALL, direction: 'passenger_to_operator', settings: DEFAULT_LANGUAGE_SETTINGS },
+      { stt: broken, translator: new MockTextTranslator(), tts: new MockTts({}) },
+      { sttRetries: 1, sttRetryDelayMs: 1, sttBackoffMinMs: 1000, sttBackoffMaxMs: 4000, errorDisplayMs: 10, now: () => clock },
+    );
+    pipe.onStage((event) => {
+      if (event.stage === 'error' && event.detail) details.push(event.detail);
+    });
+    const chunk = synthesizeSpeechSignal('hola', { pitchHz: 200 }).slice(0, 640);
+    pipe.pushAudio(chunk);
+    await waitFor(() => opens === 2, 'the first cycle of attempts');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Fifty more chunks within the back-off window: not a single new attempt.
+    for (let i = 0; i < 50; i++) pipe.pushAudio(chunk);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(opens).toBe(2);
+    expect(details.at(-1)).toContain('se volverá a intentar en 1 s');
+
+    clock += 1000;
+    pipe.pushAudio(chunk);
+    await waitFor(() => opens === 4, 'the second cycle after the back-off');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(details.at(-1)).toContain('se volverá a intentar en 2 s');
+    pipe.pushAudio(chunk);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(opens).toBe(4);
+
+    // A settings change is a reason to try again at once.
+    pipe.applyLanguageSettings({ ...DEFAULT_LANGUAGE_SETTINGS, passengerSpeaks: { mode: 'fixed', lang: 'fr' } });
+    await waitFor(() => opens === 6, 'a fresh attempt after the settings change');
+    await pipe.close();
+  });
+
   it('close() is idempotent and later audio is ignored', async () => {
     const r = rig();
     await r.operator.close();

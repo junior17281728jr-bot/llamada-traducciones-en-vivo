@@ -10,6 +10,7 @@ export const END_REASON_LABELS: Record<CallEndReason, string> = {
   failed: 'La llamada ha fallado',
   cancelled: 'Llamada cancelada',
   server_shutdown: 'El servidor se ha cerrado',
+  connection_lost: 'Se perdió la conexión con el servidor y la llamada terminó',
 };
 
 export const SERVICE_STATUS_LABELS: Record<ServiceStatus, string> = {
@@ -18,6 +19,7 @@ export const SERVICE_STATUS_LABELS: Record<ServiceStatus, string> = {
   down: 'Sin conexión',
   simulated: 'Simulado',
   unconfigured: 'Sin configurar',
+  configured: 'Clave configurada, sin comprobar',
 };
 
 export const langName = (code: string | null | undefined): string => (code ? languageNameEs(code) : '');

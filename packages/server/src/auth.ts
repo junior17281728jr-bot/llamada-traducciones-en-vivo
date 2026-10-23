@@ -151,7 +151,11 @@ export class SessionStore {
   }
 }
 
-/** Blocks a (client, user) pair after repeated failed logins. */
+/**
+ * Blocks a (client, user) pair after repeated failed logins, and a client address after many failures
+ * whatever the user names tried (every attempt costs a scrypt, so rotating names must not be free).
+ * The table is bounded: beyond `maxEntries` the oldest keys are forgotten.
+ */
 export class LoginRateLimiter {
   private readonly failures = new Map<string, number[]>();
 
@@ -159,7 +163,40 @@ export class LoginRateLimiter {
     private readonly maxFailures = 5,
     private readonly windowMs = 5 * 60_000,
     private readonly now: () => number = () => Date.now(),
+    private readonly maxFailuresPerAddress = 20,
+    private readonly maxEntries = 10_000,
   ) {}
+
+  private static pairKey(address: string, username: string): string {
+    return `${address}|${username.trim().toLowerCase()}`;
+  }
+
+  private static addressKey(address: string): string {
+    return `addr|${address}`;
+  }
+
+  /** Blocked when this user from this address, or this address alone, failed too often recently. */
+  isClientBlocked(address: string, username: string): boolean {
+    return (
+      this.recent(LoginRateLimiter.pairKey(address, username)).length >= this.maxFailures ||
+      this.recent(LoginRateLimiter.addressKey(address)).length >= this.maxFailuresPerAddress
+    );
+  }
+
+  recordClientFailure(address: string, username: string): void {
+    this.recordFailure(LoginRateLimiter.pairKey(address, username));
+    this.recordFailure(LoginRateLimiter.addressKey(address));
+  }
+
+  /** A success clears the pair; the address keeps its count (a valid login does not launder a flood). */
+  recordClientSuccess(address: string, username: string): void {
+    this.recordSuccess(LoginRateLimiter.pairKey(address, username));
+  }
+
+  /** Number of keys tracked (for tests and diagnostics). */
+  get size(): number {
+    return this.failures.size;
+  }
 
   private recent(key: string): number[] {
     const cutoff = this.now() - this.windowMs;
@@ -175,6 +212,13 @@ export class LoginRateLimiter {
 
   recordFailure(key: string): void {
     this.failures.set(key, [...this.recent(key), this.now()]);
+    if (this.failures.size > this.maxEntries) {
+      // Maps iterate in insertion order: drop the oldest keys until the table fits.
+      for (const oldest of this.failures.keys()) {
+        if (this.failures.size <= this.maxEntries) break;
+        this.failures.delete(oldest);
+      }
+    }
   }
 
   recordSuccess(key: string): void {

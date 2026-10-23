@@ -278,6 +278,16 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
     detected: LanguageStateSchema,
     /** Last warning that still applies (uncertain / changed / fallback used), or null. */
     notice: LanguageNoticeSchema.nullable(),
+    /**
+     * Same language on both ends: the server relays the ORIGINAL voice (0x03 to the operator, the microphone
+     * to the passenger) instead of synthesising it. Absent on older servers.
+     */
+    directAudio: z
+      .object({
+        passengerToOperator: z.boolean(),
+        operatorToPassenger: z.boolean(),
+      })
+      .optional(),
   }),
   z.object({
     type: z.literal('call.ended'),
@@ -709,6 +719,8 @@ export interface MaskedSecret {
   savedAt: number | null;
   /** `settings` wins over `env`. */
   source: (typeof SECRET_SOURCES)[number];
+  /** Set when a saved value exists but cannot be decrypted (SECRETS_KEY changed): the key is unusable until it is saved again. */
+  warning?: string;
 }
 export interface KeysResponse {
   keys: Record<SecretKeyName, MaskedSecret>;

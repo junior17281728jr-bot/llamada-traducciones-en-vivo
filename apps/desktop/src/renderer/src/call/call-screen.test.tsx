@@ -269,6 +269,18 @@ describe('<CallScreen>', () => {
     expect(within(partial).queryByText(/→/)).toBeNull();
   });
 
+  it('says which lanes carry the original voice when both sides share the language', () => {
+    renderScreen({ call: makeCall({ directAudio: { passengerToOperator: true, operatorToPassenger: false } }) });
+    expect(screen.getByTestId('direct-audio-passenger')).toHaveTextContent('Oyes su voz original');
+    expect(screen.queryByTestId('direct-audio-operator')).toBeNull();
+    renderScreen({ call: makeCall({ directAudio: { passengerToOperator: true, operatorToPassenger: true }, segments: [seg('s1', 'operator', true, { originalLang: 'es', translatedLang: 'es', translatedText: 'voy a comprobarlo' })] }) });
+    expect(screen.getAllByTestId('direct-audio-operator').at(-1)).toHaveTextContent('El pasajero oye tu voz original');
+    expect(screen.getByText(/Mismo idioma \(Español\): no hace falta traducir/)).toBeInTheDocument();
+    const { view } = renderScreen({ call: makeCall({ directAudio: null }) });
+    expect(within(view.container).queryByTestId('direct-audio-passenger')).toBeNull();
+    expect(within(view.container).queryByTestId('direct-audio-operator')).toBeNull();
+  });
+
   it('says when the audio of a lane stops arriving instead of drawing silence', () => {
     renderScreen({
       call: makeCall({ lanes: { passenger: { ...IDLE, levelsFlowing: false }, operator: IDLE } }),
@@ -315,6 +327,29 @@ describe('<CallScreen>', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('No se pudo realizar la llamada');
     fireEvent.click(screen.getByRole('button', { name: 'Entendido' }));
     expect(actions.dismissError).toHaveBeenCalled();
+  });
+
+  it('shows a "modo audio del PC" session with its label, the headphones notice and "Terminar traducción"', () => {
+    const { actions } = renderScreen({ call: makeCall({ direction: 'local', remoteNumber: 'WhatsApp', simulated: false }) });
+    expect(screen.getByTestId('call-screen')).toHaveAttribute('data-direction', 'local');
+    expect(screen.getByText('Audio del PC')).toBeInTheDocument();
+    expect(screen.getByText('WhatsApp')).toBeInTheDocument();
+    expect(screen.queryByText('Llamada entrante')).toBeNull();
+    expect(screen.queryByText('Simulado')).toBeNull();
+    const notice = screen.getByTestId('local-call-notice');
+    expect(notice).toHaveTextContent('Usa auriculares');
+    expect(notice).toHaveTextContent('no está probado todavía con WhatsApp real');
+    expect(screen.getByTestId('passenger-language')).toHaveTextContent('cable A');
+    expect(screen.queryByRole('button', { name: 'Colgar' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Terminar traducción' }));
+    expect(actions.hangup).toHaveBeenCalled();
+  });
+
+  it('an ended "modo audio del PC" session reminds the operator to hang up in the other program', () => {
+    renderScreen({ call: makeCall({ direction: 'local', remoteNumber: 'WhatsApp', simulated: false, state: 'ended', endedReason: 'hangup_operator' }) });
+    expect(screen.getByText(/Traducción terminada/)).toHaveTextContent('colgar también en el otro programa');
+    expect(screen.queryByTestId('local-call-notice')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Terminar traducción' })).toBeNull();
   });
 
   it('offers the simulated voice box only when the server allows it', () => {
