@@ -58,13 +58,17 @@ jobs:
         run: |
           set -e
           ls -la instaladores
+          cat > notas.md <<'NOTAS'
+          Instaladores generados automáticamente (sin firmar).
+
+          **Mac:** descarga el `.dmg` (`arm64` para chips Apple M1 o posteriores, `x64` para Intel), arrastra la app a Aplicaciones y ábrela con clic derecho > Abrir.
+
+          **Windows:** descarga el `.exe`; si aparece el aviso de Windows, pulsa «Más información» > «Ejecutar de todas formas».
+
+          La app necesita el servidor en marcha (ver README).
+          NOTAS
           gh release delete ultima --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
           gh release create ultima instaladores/*.dmg instaladores/*.exe \
             -R "$GITHUB_REPOSITORY" \
             --title "Última versión de prueba (sin firmar)" \
-            --notes "Instaladores generados automáticamente desde el commit ${GITHUB_SHA}.
-
-**Mac:** descarga el .dmg (arm64 para chips Apple M1 o posteriores, x64 para Intel), arrastra la app a Aplicaciones y ábrela con clic derecho > Abrir (no está firmada).
-**Windows:** descarga el .exe; si aparece el aviso de Windows, pulsa Más información > Ejecutar de todas formas.
-
-La app necesita el servidor en marcha (ver README)."
+            --notes-file notas.md
