@@ -98,6 +98,9 @@ export const api = {
     apiRequest<LoginResponse>(API_PATHS.login, { method: 'POST', body: request, serverUrl, auth: false }),
 
   getLanguages: (): Promise<LanguageCatalog> => apiRequest<LanguageCatalog>(API_PATHS.languages),
+  /** Admin only: asks the server to query ElevenLabs for its languages (falls back to the built-in list). */
+  refreshLanguages: (): Promise<LanguageCatalog> => apiRequest<LanguageCatalog>(`${API_PATHS.languages}/refresh`, { method: 'POST' }),
+  logout: (): Promise<{ ok: boolean }> => apiRequest<{ ok: boolean }>('/api/logout', { method: 'POST' }),
 
   getPreferences: (): Promise<OperatorPreferences> => apiRequest<OperatorPreferences>(API_PATHS.preferences),
   putPreferences: (preferences: OperatorPreferences): Promise<OperatorPreferences> =>

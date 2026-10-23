@@ -64,7 +64,7 @@ export async function createApplication(config: ServerConfig, overrides: Applica
   });
   const transcripts = new FileTranscriptStore(config.dataDir);
   const recordings = config.recordCalls ? new FileRecordingStore(config.dataDir) : null;
-  const providers = overrides.providers ?? createProviders(config);
+  const providers = overrides.providers ?? createProviders(config, { getSecret: (name) => secrets.resolve(name) });
 
   const manager = new CallManager({
     config,

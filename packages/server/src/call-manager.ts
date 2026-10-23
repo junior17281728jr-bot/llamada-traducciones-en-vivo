@@ -388,6 +388,10 @@ export class CallManager {
     this.ownedSession(operatorId, callId)?.setMuted(muted);
   }
 
+  /** "Modo audio del PC" (filled in by the desktop-audio channel work). */
+  startLocal?: (operatorId: string, label: string, langHint?: string, languages?: PartialLanguageSettings) => Promise<void>;
+  pushPassengerLocalAudio?: (operatorId: string, pcm: PcmChunk) => void;
+
   pushOperatorAudio(operatorId: string, pcm: PcmChunk): void {
     const operator = this.operators.get(operatorId);
     if (!operator?.currentCallId) return;
@@ -493,7 +497,7 @@ export class CallManager {
       remoteNumber: call.remoteNumber,
       operatorId,
       passengerLang: normalizeLanguageCode(call.langHint),
-      state: call.direction === 'inbound' ? 'ringing' : 'dialing',
+      state: call.direction === 'inbound' ? 'ringing' : call.direction === 'local' ? 'active' : 'dialing',
       createdAt: this.now(),
       answeredAt: null,
       endedAt: null,

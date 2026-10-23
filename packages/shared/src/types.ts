@@ -7,16 +7,24 @@ import { normalizeLanguageCode, OPERATOR_LANGUAGE, type LanguageCode } from './l
 /** Opaque call identifier, unique across the whole system. */
 export type CallId = string;
 
-export const DIRECTIONS = ['inbound', 'outbound'] as const;
-/** `inbound`: a passenger called us. `outbound`: an operator dialed out. */
+export const DIRECTIONS = ['inbound', 'outbound', 'local'] as const;
+/**
+ * `inbound`: a passenger called us. `outbound`: an operator dialed out. `local`: "modo audio del PC",
+ * the call happens in another program (e.g. WhatsApp Desktop) and its audio reaches us through virtual
+ * audio cables on the operator's computer.
+ */
 export type Direction = (typeof DIRECTIONS)[number];
 
 export const PROVIDER_MODES = ['mock', 'elevenlabs'] as const;
 /** Which STT/translation/TTS implementations the server runs (`PROVIDERS` env var). */
 export type ProviderMode = (typeof PROVIDER_MODES)[number];
 
-export const CHANNEL_KINDS = ['mock', 'twilio', 'whatsapp'] as const;
-/** Which telephony channel the server uses (`CHANNEL` env var). */
+export const CHANNEL_KINDS = ['mock', 'twilio', 'whatsapp', 'desktop-audio'] as const;
+/**
+ * Which telephony channel the server uses (`CHANNEL` env var). `desktop-audio` means no telephone line at
+ * all: only "local" calls fed by the operator's computer (virtual audio cables); local calls are also
+ * available alongside every other channel.
+ */
 export type ChannelKind = (typeof CHANNEL_KINDS)[number];
 
 export const SPEAKERS = ['operator', 'passenger'] as const;

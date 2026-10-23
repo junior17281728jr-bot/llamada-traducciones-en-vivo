@@ -9,3 +9,4 @@ import type { CallClientFactory } from '../core/CallContext';
 export const createCallClient: CallClientFactory = (session) => createClient(session);
 
 export { CallScreen } from './CallScreen';
+export { LocalCallStart } from './LocalCallStart';

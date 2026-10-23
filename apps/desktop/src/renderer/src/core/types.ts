@@ -41,6 +41,8 @@ export interface ServerInfo {
   /** True when `debug.say` is accepted. */
   debug: boolean;
   maxCalls: number;
+  /** True when the server accepts "modo audio del PC" calls (`call.startLocal`). */
+  localAudio?: boolean;
 }
 
 export interface PresenceInfo {
@@ -166,6 +168,11 @@ export interface CallActions {
   dismissEndedCall(): void;
   /** Hides the last error banner. */
   dismissError?(): void;
+  /**
+   * "Modo audio del PC": start a translated session for a call that is happening in another program,
+   * with the passenger audio taken from the cable devices chosen in Settings (see core/audio-prefs.ts).
+   */
+  startLocal?(label: string, options?: { langHint?: string; languages?: PartialLanguageSettings }): void;
 }
 
 export interface CallClientApi {

@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, type RawData } from 'ws';
 import {
+  AudioFrameType,
   MAX_CONTROL_MESSAGE_LENGTH,
   PROTOCOL_VERSION,
   SERVER_ACCEPTED_FRAME_TYPES,
@@ -132,6 +133,10 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
       case 'call.dial':
         void manager.dial(id, message.number, message.languages);
         break;
+      case 'call.startLocal':
+        if (!manager.startLocal) return fail('dial_failed', 'El modo audio del PC no está disponible en este servidor');
+        void manager.startLocal(id, message.label, message.langHint, message.languages);
+        break;
       case 'call.setLanguages':
         manager.setLanguages(id, message.callId, message.settings);
         break;
@@ -165,7 +170,8 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
         if (++badFrames >= MAX_BAD_FRAMES) ws.close(1008, 'too many bad frames');
         return;
       }
-      deps.manager.pushOperatorAudio(operatorId, frame.value.pcm.slice());
+      if (frame.value.type === AudioFrameType.OperatorMic) deps.manager.pushOperatorAudio(operatorId, frame.value.pcm.slice());
+      else if (frame.value.type === AudioFrameType.PassengerLocal) deps.manager.pushPassengerLocalAudio?.(operatorId, frame.value.pcm.slice());
       return;
     }
 

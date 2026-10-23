@@ -34,14 +34,22 @@ export interface Providers {
  * build: with PROVIDERS=elevenlabs or CHANNEL=twilio|whatsapp the server refuses to start instead of
  * pretending to work.
  */
-export function createProviders(config: ServerConfig, options: { speed?: number } = {}): Providers {
+export interface CreateProvidersOptions {
+  /** Simulation speed (mock only). */
+  speed?: number;
+  /** Resolves an API key (Settings first, then the environment). Needed by PROVIDERS=elevenlabs. */
+  getSecret?: (name: 'ELEVENLABS_API_KEY' | 'ANTHROPIC_API_KEY') => Promise<string | undefined>;
+  env?: Record<string, string | undefined>;
+}
+
+export function createProviders(config: ServerConfig, options: CreateProvidersOptions = {}): Providers {
   const speed = options.speed ?? 1;
   if (config.providers !== 'mock') {
     throw new NotConfiguredError(
       'PROVIDERS=elevenlabs todavía no está disponible en esta versión: faltan los clientes de ElevenLabs y de Claude. Usa PROVIDERS=mock.',
     );
   }
-  if (config.channel !== 'mock') {
+  if (config.channel !== 'mock' && config.channel !== 'desktop-audio') {
     throw new NotConfiguredError(
       `CHANNEL=${config.channel} todavía no está implementado: no hay código de telefonía real. Mira docs/CANALES.md. Usa CHANNEL=mock.`,
     );

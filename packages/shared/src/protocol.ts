@@ -156,6 +156,18 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
     number: PhoneNumberSchema,
     languages: PartialLanguageSettingsSchema.optional(),
   }),
+  /**
+   * "Modo audio del PC": the operator is on a call in another program (e.g. WhatsApp Desktop) whose
+   * audio is routed through virtual audio cables. Starts a translated session whose passenger audio
+   * arrives in `PassengerLocal` frames and whose translated operator voice goes back in
+   * `TranslatedToPassenger` frames. `label` is what the history shows instead of a phone number.
+   */
+  z.object({
+    type: z.literal('call.startLocal'),
+    label: z.string().trim().min(1).max(64),
+    langHint: LanguageCodeSchema.optional(),
+    languages: PartialLanguageSettingsSchema.optional(),
+  }),
   /** Live change from the operator. Applies to the NEXT phrases, never cuts audio that is playing. */
   z.object({
     type: z.literal('call.setLanguages'),
@@ -222,6 +234,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
       /** True when `debug.say` is accepted (simulated providers only). */
       debug: z.boolean(),
       maxCalls: z.number().int().positive(),
+      /** True when `call.startLocal` ("modo audio del PC") is available. */
+      localAudio: z.boolean().optional(),
     }),
   }),
   z.object({ type: z.literal('auth.error'), code: z.enum(AUTH_ERROR_CODES), message: z.string() }),
@@ -405,6 +419,10 @@ export const AudioFrameType = {
   TranslatedPassenger: 0x02,
   /** Passenger's original voice, server -> client. */
   OriginalPassenger: 0x03,
+  /** "Modo audio del PC": passenger audio captured from a virtual cable, client -> server (local calls only). */
+  PassengerLocal: 0x04,
+  /** "Modo audio del PC": operator voice translated for the passenger, server -> client, to play into the cable. */
+  TranslatedToPassenger: 0x05,
 } as const;
 export type AudioFrameTypeValue = (typeof AudioFrameType)[keyof typeof AudioFrameType];
 
@@ -412,11 +430,12 @@ export type AudioFrameTypeValue = (typeof AudioFrameType)[keyof typeof AudioFram
 export const LEVELS_FRAME_TYPE = 0x10 as const;
 
 /** Frame types the server accepts from an operator app. */
-export const SERVER_ACCEPTED_FRAME_TYPES: readonly number[] = [AudioFrameType.OperatorMic];
+export const SERVER_ACCEPTED_FRAME_TYPES: readonly number[] = [AudioFrameType.OperatorMic, AudioFrameType.PassengerLocal];
 /** Frame types an operator app accepts from the server. */
 export const CLIENT_ACCEPTED_FRAME_TYPES: readonly number[] = [
   AudioFrameType.TranslatedPassenger,
   AudioFrameType.OriginalPassenger,
+  AudioFrameType.TranslatedToPassenger,
   LEVELS_FRAME_TYPE,
 ];
 
