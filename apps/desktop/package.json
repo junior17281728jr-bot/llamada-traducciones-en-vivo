@@ -14,8 +14,8 @@
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.renderer.json",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "package:win": "npm run build && electron-builder --win --x64",
-    "package:mac": "npm run build && electron-builder --mac --arm64 --x64"
+    "package:win": "npm run build && electron-builder --win --x64 --publish never",
+    "package:mac": "npm run build && electron-builder --mac --arm64 --x64 --publish never"
   },
   "dependencies": {
     "@tw/shared": "*",
@@ -31,7 +31,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "^45.0.0",
+    "electron": "45.0.0",
     "electron-builder": "^26.15.3",
     "jsdom": "^29.1.1",
     "vite": "^7.3.7"
@@ -77,6 +77,8 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Telecomway usa el micrófono para traducir tus llamadas."
       }
-    }
-  }
+    },
+    "electronVersion": "45.0.0"
+  },
+  "author": "Telecomway"
 }
