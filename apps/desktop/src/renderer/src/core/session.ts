@@ -26,6 +26,31 @@ export interface DesktopConfig {
   serverUrl: string;
   platform: string;
   version: string;
+  /** Present when the app runs its own embedded (simulated) server: the local login it created. */
+  embedded?: { username: string; password: string } | null;
+}
+
+/** What `window.telecomway.simulateCall()` reports. */
+export interface SimulatedCallResult {
+  outcome: 'completed' | 'not_answered' | 'rejected' | 'ended_early' | 'unsupported';
+  callId?: string | null;
+  reason?: string;
+  message?: string;
+}
+
+/** Embedded server only. Null in a browser or when the app talks to an external server. */
+export async function requestSimulatedCall(): Promise<SimulatedCallResult | null> {
+  try {
+    const bridge = window.telecomway;
+    if (!bridge?.simulateCall) return null;
+    return await bridge.simulateCall();
+  } catch {
+    return { outcome: 'unsupported', message: 'No se pudo lanzar la llamada de prueba.' };
+  }
+}
+
+export function canSimulateCall(): boolean {
+  return typeof window !== 'undefined' && typeof window.telecomway?.simulateCall === 'function';
 }
 
 export const FALLBACK_SERVER_URL = 'http://127.0.0.1:8787';

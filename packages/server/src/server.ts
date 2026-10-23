@@ -7,9 +7,12 @@ import { MockCallChannel } from './channel/mock-channel.js';
 import { HttpError, SECURITY_HEADERS, sendError, sendJson } from './http-utils.js';
 import { handleOperatorSocket, type OperatorSocketDeps } from './operator-socket.js';
 import { handleSimSocket } from './sim-socket.js';
+import { serveStatic } from './static.js';
 
 export interface ServerDeps extends ApiDeps {
   channel: CallChannel;
+  /** Folder with the compiled operator page to serve at `/` (same origin as the API); omitted = API only. */
+  staticDir?: string;
   socket: Pick<OperatorSocketDeps, 'debug' | 'systemStatus' | 'localAudio'>;
 }
 
@@ -56,7 +59,9 @@ export function createTelecomwayServer(deps: ServerDeps): RunningServer {
         }
         const url = new URL(req.url ?? '/', 'http://localhost');
         for (const [name, value] of Object.entries(cors)) res.setHeader(name, value);
-        if (!(await handleApi(req, res, url, deps))) throw new HttpError(404, 'not_found', 'No existe esa ruta');
+        if (await handleApi(req, res, url, deps)) return;
+        if (deps.staticDir && (await serveStatic(req, res, url.pathname, deps.staticDir))) return;
+        throw new HttpError(404, 'not_found', 'No existe esa ruta');
       } catch (error) {
         if (error instanceof HttpError) {
           sendError(res, error, cors);

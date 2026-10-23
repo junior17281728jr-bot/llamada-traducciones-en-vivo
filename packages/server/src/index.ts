@@ -13,3 +13,13 @@ export { ConfigError, loadConfig, type ServerConfig } from './config.js';
 export { loadDotEnv, parseDotEnv, applyDotEnv, type LoadDotEnvResult } from './dotenv.js';
 export { createProviders, NotConfiguredError, type Providers } from './providers.js';
 export { createTelecomwayServer, type RunningServer } from './server.js';
+export {
+  startEmbeddedServer,
+  simulatePassengerCall,
+  DEFAULT_TEST_CALL,
+  type EmbeddedServer,
+  type EmbeddedServerOptions,
+  type SimulatedCallOptions,
+  type SimulatedCallOutcome,
+  type SimulatedLine,
+} from './embedded.js';

@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && node scripts/bundle-server.mjs && vite build",
     "build:main": "tsc -b",
     "build:renderer": "vite build",
     "dev": "vite",
@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "package:win": "npm run build && electron-builder --win --x64 --publish never",
-    "package:mac": "npm run build && electron-builder --mac --arm64 --x64 --publish never"
+    "package:mac": "npm run build && electron-builder --mac --arm64 --x64 --publish never",
+    "build:embedded": "node scripts/bundle-server.mjs"
   },
   "dependencies": {
     "@tw/shared": "*",
@@ -46,6 +47,7 @@
       "dist/main/**",
       "dist/preload/**",
       "dist/renderer/**",
+      "dist/embedded/**",
       "package.json"
     ],
     "win": {

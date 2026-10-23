@@ -10,6 +10,31 @@ En la pantalla de llamada hay dos carriles, **«Pasajero»** (azul) y **«Operad
 
 **Si se cae la conexión de la app** en mitad de una llamada, la llamada sigue durante `RECONNECT_GRACE_SECONDS` (10 s por defecto) mientras la app reconecta sola y reanuda con su token; al volver, la pantalla recibe de nuevo el estado de la llamada. Si no vuelve a tiempo, la llamada termina con el motivo «se perdió la conexión del operador» y así queda en el historial.
 
+## Instalar en Mac o Windows (doble clic, sin terminal)
+
+La aplicación de escritorio lleva el servidor dentro: al abrirla arranca su propio servidor en tu equipo, en modo
+simulado, entra sola con un usuario local y ya puedes probarlo todo sin instalar nada más.
+
+1. Descarga el instalador desde la versión «ultima»:
+   https://github.com/junior17281728jr-bot/llamada-traducciones-en-vivo/releases/tag/ultima
+   - Mac: el `.dmg` (`arm64` para chips Apple M1 o posteriores; `x64` para Intel).
+   - Windows: el `.exe`.
+2. Mac: abre el `.dmg` y arrastra «Telecomway Traductor» a Aplicaciones. La primera vez, clic derecho sobre la app
+   > «Abrir» > «Abrir» (no está firmada, por eso macOS avisa). Windows: si sale «Windows protegió su PC», pulsa
+   «Más información» > «Ejecutar de todas formas».
+3. Acepta el permiso del micrófono cuando lo pida.
+4. En la pestaña **Llamada** pulsa **«Recibir llamada de prueba»**: un pasajero simulado llama en inglés, la llamada
+   entra sola y verás la transcripción, la traducción y las dos ondas. Responde hablando por el micrófono o con la caja
+   «Dices tú (en español)».
+
+Qué es y qué no es este modo:
+- Todo es **simulado** (voz, traducción y teléfono): sirve para ver y probar el programa, no para atender pasajeros reales.
+- Los datos (historial, grabaciones, usuario local) se guardan en la carpeta de datos de la app de tu usuario.
+- Para usar ElevenLabs y Claude reales hace falta un servidor propio con `PROVIDERS=elevenlabs` y las claves en Ajustes
+  (ver más abajo); la app puede conectarse a él arrancándola con `TW_SERVER_URL=http://...`.
+- UNVERIFIED: la app de escritorio no se ha podido ejecutar en el entorno donde se construyó (no hay Electron ni Mac).
+  El servidor integrado sí está probado con Node y con pruebas automáticas.
+
 ## Estado, en una frase
 
 Todo el recorrido funciona **contra simuladores locales** (voz, traducción y teléfono simulados) y se ha probado de punta a punta por red y en Chromium. **Nada se ha probado contra ElevenLabs, Anthropic, Twilio, Meta, WhatsApp, un micrófono real, cables de audio reales ni el binario de Electron.** Siempre que algo es simulado, la interfaz lo rotula **«Simulado»**; lo no verificado está marcado `UNVERIFIED` en el código. El detalle honesto está en [`docs/ESTADO.md`](docs/ESTADO.md).

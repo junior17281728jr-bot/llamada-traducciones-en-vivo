@@ -43,6 +43,8 @@ export interface Application extends RunningServer {
 
 export interface ApplicationOverrides {
   logger?: Logger;
+  /** Serve the compiled operator page from this folder at `/` (used by the desktop app's embedded server). */
+  staticDir?: string;
   providers?: Providers;
   catalog?: LanguageCatalogProvider;
   tester?: ConnectionTester;
@@ -139,6 +141,7 @@ export async function createApplication(config: ServerConfig, overrides: Applica
   const running = createTelecomwayServer({
     config,
     logger,
+    ...(overrides.staticDir ? { staticDir: overrides.staticDir } : {}),
     operators,
     sessions: new SessionStore(config.sessionTtlHours * 3_600_000),
     limiter: new LoginRateLimiter(),

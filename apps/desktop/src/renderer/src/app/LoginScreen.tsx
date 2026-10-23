@@ -48,11 +48,29 @@ export function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [desktop, setDesktop] = useState<DesktopConfig | null>(null);
 
+  const [autoLogin, setAutoLogin] = useState(false);
+  const autoTried = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
-    void readDesktopConfig().then((config) => {
+    void readDesktopConfig().then(async (config) => {
       if (cancelled || !config) return;
       setDesktop(config);
+      // The app's own embedded server: sign in with the local login it created, no typing needed.
+      if (config.embedded && !autoTried.current) {
+        autoTried.current = true;
+        setAutoLogin(true);
+        const url = normalizeServerUrl(config.serverUrl);
+        try {
+          const response = await api.login(url, config.embedded);
+          if (!cancelled) setSession({ serverUrl: url, token: response.token, expiresAt: response.expiresAt, operator: response.operator });
+        } catch (cause) {
+          if (!cancelled) setError(describeLoginError(cause, url));
+        } finally {
+          if (!cancelled) setAutoLogin(false);
+        }
+        return;
+      }
       // The shell's URL (TW_SERVER_URL) beats the built-in default, never a URL the user typed or used before.
       setServerUrl((current) =>
         !serverEdited.current && current === FALLBACK_SERVER_URL && config.serverUrl ? normalizeServerUrl(config.serverUrl) : current,
@@ -90,11 +108,16 @@ export function LoginScreen() {
 
   return (
     <main className="login" data-testid="login-screen">
-      <form className="login__card card" onSubmit={(event) => void submit(event)} noValidate aria-busy={busy}>
+      <form className="login__card card" onSubmit={(event) => void submit(event)} noValidate aria-busy={busy || autoLogin}>
         <header className="login__header">
           <h1 className="login__title">Telecomway</h1>
           <p className="login__subtitle">Traducción de voz en vivo para llamadas con pasajeros</p>
         </header>
+        {autoLogin ? (
+          <p className="notice notice--info" role="status" data-testid="auto-login">
+            Entrando en el modo local de esta aplicación…
+          </p>
+        ) : null}
 
         <div className="field">
           <label className="field__label" htmlFor={ids.server}>

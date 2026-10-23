@@ -133,3 +133,12 @@ Cada punto se verificó primero leyendo el código o reproduciéndolo contra el 
 - Si el micrófono se desconecta a mitad de llamada, la app avisa y lo intenta recuperar 3 veces (cada 1,5 s); si no lo consigue, lo dice.
 - Al arrancar, el servidor cierra en el historial las llamadas que una ejecución anterior dejó abiertas (motivo «server_shutdown»).
 - Sin verificar: todo lo anterior con micrófonos, auriculares, cables y WhatsApp reales (solo audio simulado).
+
+## Servidor integrado en la app de escritorio (añadido)
+
+- Probado: `dist/embedded/server.cjs` (servidor + pipeline + shared en un solo archivo) arranca con Node, sirve la página
+  compilada con su CSP, crea el administrador local, contesta sola una llamada simulada y la transcribe (prueba
+  automática `embedded.test.ts` y comprobación manual con Node). La interfaz entra sola con el usuario local y muestra
+  el botón «Recibir llamada de prueba» (pruebas `app/embedded.test.tsx`).
+- Sin verificar: el arranque dentro de Electron real (ventana, permiso de micrófono, `before-quit`), el instalador
+  `.dmg`/`.exe` abriéndose en un Mac o Windows reales, y el micrófono real. El audio de la llamada de prueba es sintético.

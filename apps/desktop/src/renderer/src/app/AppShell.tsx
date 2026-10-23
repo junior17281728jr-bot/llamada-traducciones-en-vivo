@@ -1,6 +1,7 @@
 import './app.css';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { CallScreen, LocalCallStart } from '../call';
+import { canSimulateCall, requestSimulatedCall, type SimulatedCallResult } from '../core/session';
 import { useCall } from '../core/CallContext';
 import { api } from '../core/http';
 import { clearSession, useSession, type Session } from '../core/session';
@@ -67,8 +68,49 @@ function IdleCallPanel({ state }: IdleCallPanelProps) {
           </dl>
         ) : null}
       </div>
+      {connected && canSimulateCall() ? <TestCallCard /> : null}
       {state.server?.localAudio ? <LocalCallStart /> : null}
     </section>
+  );
+}
+
+const TEST_CALL_OUTCOMES: Record<SimulatedCallResult['outcome'], string> = {
+  completed: 'La llamada de prueba ha terminado. Puedes verla en el historial.',
+  not_answered: 'Nadie contestó la llamada de prueba.',
+  rejected: 'La llamada de prueba se rechazó (todas las líneas ocupadas o ningún operador libre).',
+  ended_early: 'La llamada de prueba terminó antes de tiempo.',
+  unsupported: 'La llamada de prueba no está disponible.',
+};
+
+/** Embedded server only: a simulated English-speaking passenger calls, so the whole flow can be tried with no phone line. */
+function TestCallCard() {
+  const [running, setRunning] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  async function start(): Promise<void> {
+    setRunning(true);
+    setMessage(null);
+    const result = await requestSimulatedCall();
+    setRunning(false);
+    if (result) setMessage(result.message ?? TEST_CALL_OUTCOMES[result.outcome]);
+  }
+  return (
+    <div className="card idle__card" data-testid="test-call-card">
+      <h2 className="card__title">
+        Llamada de prueba <span className="badge badge--simulated">Simulado</span>
+      </h2>
+      <p className="muted">
+        Un pasajero simulado llama en inglés (vuelo cancelado, pide hotel). La llamada entra sola, verás la traducción al español y podrás
+        responder con el micrófono o con la caja «Dices tú». El audio es sintético: no demuestra nada sobre llamadas reales.
+      </p>
+      <button type="button" className="button button--primary" disabled={running} onClick={() => void start()}>
+        {running ? 'Llamada en curso…' : 'Recibir llamada de prueba'}
+      </button>
+      {message ? (
+        <p className="notice notice--info" role="status">
+          {message}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
