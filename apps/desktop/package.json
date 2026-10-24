@@ -78,9 +78,13 @@
       "category": "public.app-category.business",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Telecomway usa el micrófono para traducir tus llamadas."
-      }
+      },
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
     },
-    "electronVersion": "45.0.0"
+    "electronVersion": "45.0.0",
+    "afterPack": "scripts/after-pack.cjs"
   },
   "author": "Telecomway"
 }

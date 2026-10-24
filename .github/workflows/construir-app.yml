@@ -61,7 +61,10 @@ jobs:
           cat > notas.md <<'NOTAS'
           Instaladores generados automáticamente (sin firmar).
 
-          **Mac:** descarga el `.dmg` (`arm64` para chips Apple M1 o posteriores, `x64` para Intel), arrastra la app a Aplicaciones y ábrela con clic derecho > Abrir.
+          **Mac:** descarga el `.dmg` (`arm64` para chips Apple M1 o posteriores, `x64` para Intel) y arrastra la app a Aplicaciones.
+          Como no está firmada por Apple, la primera vez macOS la bloquea. Dos formas de abrirla:
+          1. Intenta abrirla, ve a Ajustes del Sistema > Privacidad y seguridad, baja hasta «Telecomway Traductor se bloqueó» y pulsa **Abrir de todos modos** (macOS 15); o clic derecho > Abrir (macOS 14 o anterior).
+          2. Si dice «está dañada», abre Terminal y ejecuta: `xattr -cr "/Applications/Telecomway Traductor.app"` y vuelve a abrirla.
 
           **Windows:** descarga el `.exe`; si aparece el aviso de Windows, pulsa «Más información» > «Ejecutar de todas formas».
 

@@ -19,9 +19,11 @@ simulado, entra sola con un usuario local y ya puedes probarlo todo sin instalar
    https://github.com/junior17281728jr-bot/llamada-traducciones-en-vivo/releases/tag/ultima
    - Mac: el `.dmg` (`arm64` para chips Apple M1 o posteriores; `x64` para Intel).
    - Windows: el `.exe`.
-2. Mac: abre el `.dmg` y arrastra «Telecomway Traductor» a Aplicaciones. La primera vez, clic derecho sobre la app
-   > «Abrir» > «Abrir» (no está firmada, por eso macOS avisa). Windows: si sale «Windows protegió su PC», pulsa
-   «Más información» > «Ejecutar de todas formas».
+2. Mac: abre el `.dmg` y arrastra «Telecomway Traductor» a Aplicaciones. Como no está firmada por Apple, la primera
+   vez macOS la bloquea: intenta abrirla, ve a Ajustes del Sistema > Privacidad y seguridad, baja hasta «Telecomway
+   Traductor se bloqueó» y pulsa **Abrir de todos modos** (en macOS 14 o anterior basta clic derecho > Abrir). Si dice
+   «está dañada», abre Terminal y ejecuta `xattr -cr "/Applications/Telecomway Traductor.app"` y vuelve a abrirla.
+   Windows: si sale «Windows protegió su PC», pulsa «Más información» > «Ejecutar de todas formas».
 3. Acepta el permiso del micrófono cuando lo pida.
 4. En la pestaña **Llamada** pulsa **«Recibir llamada de prueba»**: un pasajero simulado llama en inglés, la llamada
    entra sola y verás la transcripción, la traducción y las dos ondas. Responde hablando por el micrófono o con la caja
