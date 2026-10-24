@@ -48,10 +48,19 @@ describe('home screen of the desktop app', () => {
     expect(fake.actions.setAutoWhatsapp).toHaveBeenCalledTimes(2);
   });
 
-  it('collapses the guide into one green line once everything is ready, and warns about a key that failed', () => {
+  it('collapses the guide into one green line once everything is ready', () => {
+    window.localStorage.setItem('tw.audio.passengerInput', 'cable-a');
+    window.localStorage.setItem('tw.audio.passengerOutput', 'cable-b');
     home({ status: 'listening', enabled: true }, ['ok', 'configured']);
     expect(screen.getByTestId('setup-ready')).toHaveTextContent('Todo listo');
     expect(screen.queryByTestId('setup-guide')).toBeNull();
+    window.localStorage.removeItem('tw.audio.passengerInput');
+    window.localStorage.removeItem('tw.audio.passengerOutput');
+  });
+
+  it('does not tick the cables step while the automatic entry is off and no cable is chosen', () => {
+    home({ status: 'off', enabled: false }, ['ok', 'ok']);
+    expect(screen.getByText('La guía de Ajustes te dice qué instalar y qué elegir en WhatsApp.')).toBeInTheDocument();
   });
 
   it('shows a failed key as a pending step', () => {

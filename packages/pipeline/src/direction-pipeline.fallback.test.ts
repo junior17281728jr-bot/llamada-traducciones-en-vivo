@@ -16,6 +16,8 @@ import { TranslationDirectionPipeline, type DirectionPipelineOptions } from './d
 import { utteranceKey } from './factory.js';
 import { MockTextTranslator, type MockTranslatorOptions } from './mock/mock-translator.js';
 import { MockTts, mockVoicePitchHz } from './mock/mock-tts.js';
+import { NoSystemVoiceEngine } from './system-voice/engines.js';
+import { SystemTtsProvider } from './system-voice/system-tts.js';
 import { ScriptedStt } from './mock/scripted-stt.js';
 import { UtteranceBus } from './mock/utterance-bus.js';
 import { Emitter } from './util/emitter.js';
@@ -188,6 +190,52 @@ describe('plan B: the computer voice when the main voice fails', () => {
   });
 });
 
+describe('plan B never plays translated audio over the original voice', () => {
+  it('drops a phrase already queued or playing as soon as the relay starts', async () => {
+    let n = 0;
+    const r = rig({
+      translator: { failWhen: () => ++n >= 3 },
+      tts: new MockTts({ realtime: true }),
+      pipeline: { fallback: { systemVoice: false, originalVoice: true } },
+    });
+    let relaying = false;
+    let overlapped = 0;
+    r.pipe.onFallback((state) => {
+      relaying = state.originalVoice;
+    });
+    r.pipe.onAudio((pcm) => {
+      if (relaying) overlapped += pcm.byteLength;
+    });
+    say(r, 'my flight was cancelled and I need a hotel for tonight please', 'en');
+    say(r, 'where is the baggage claim for international arrivals', 'en');
+    say(r, 'thank you very much', 'en');
+    await waitFor(() => relaying, 'the relay', 8000);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(overlapped).toBe(0);
+    await r.pipe.close();
+  });
+
+  it('while the main voice cools down, it is still tried when the computer voice cannot speak', async () => {
+    let fails = 1;
+    let opens = 0;
+    const flaky: TtsProvider = {
+      openSession: (options) => {
+        opens += 1;
+        if (fails-- > 0) return Promise.reject(new Error('ElevenLabs 503 una vez'));
+        return new MockTts({}).openSession(options);
+      },
+    };
+    const r = rig({ tts: flaky, fallbackTts: new SystemTtsProvider(new NoSystemVoiceEngine()), pipeline: { voiceRetryMs: 200 } });
+    say(r, EN, 'en');
+    await waitFor(() => r.pipe.getFallback().originalVoice, 'the relay after both voices failed');
+    await waitFor(() => !r.pipe.getFallback().originalVoice, 'the retry window');
+    say(r, EN, 'en');
+    await waitFor(() => concatPcm(r.out).byteLength >= spanishVoice().byteLength, 'the main voice again, inside its cooldown');
+    expect(opens).toBe(2);
+    await r.pipe.close();
+  });
+});
+
 describe('plan B: the original voice when transcription or translation is down', () => {
   it('relays the original voice while the translator fails, and stops as soon as a translation works', async () => {
     let failing = true;
@@ -197,9 +245,15 @@ describe('plan B: the original voice when transcription or translation is down',
     expect(r.pipe.getFallback().detail).toContain('traducción no responde');
     expect(r.out).toHaveLength(0);
 
+    // This phrase was said while the original voice was relayed: it is translated on screen but not spoken late.
     failing = false;
     say(r, EN, 'en');
     await waitFor(() => !r.pipe.getFallback().originalVoice, 'the end of the relay');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(r.out).toHaveLength(0);
+
+    // The next phrase is translated and spoken again.
+    say(r, EN, 'en');
     await waitFor(() => concatPcm(r.out).byteLength >= spanishVoice().byteLength, 'the translated phrase spoken again');
     await r.pipe.close();
   });

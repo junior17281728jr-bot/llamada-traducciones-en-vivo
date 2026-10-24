@@ -142,6 +142,8 @@ interface Job {
   finalAt: number;
   context: TranslationContextTurn[];
   translateMs: number | null;
+  /** The phrase was said while the original voice was being relayed (plan B): it was already heard, it is not spoken again. */
+  relayed: boolean;
 }
 
 interface Waiter {
@@ -508,6 +510,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
       finalAt: this.options.now(),
       context: [...this.recent],
       translateMs: null,
+      relayed: this.relayingOriginal(),
     };
     this.recent.push({ speaker: this.speaker, text });
     if (this.recent.length > this.options.contextTurns) this.recent.shift();
@@ -638,7 +641,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
 
       // Spoken unless the session is relaying the original voice for this direction (same language, known for sure,
       // or plan B while a service is down).
-      if (!failed && !relay && translatedText && !this.relayingOriginal()) {
+      if (!failed && !relay && translatedText && !job.relayed && !this.relayingOriginal()) {
         this.awaitingAudio += 1;
         const text = translatedText;
         this.speechChain = this.speechChain
@@ -750,14 +753,15 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
       this.awaitingAudio -= 1;
     };
     try {
-      if (this.closed) return;
-      const plan: VoiceKind[] = [];
+      // The original voice started being relayed after this phrase was queued: speaking it now would overlap.
+      if (this.closed || this.relayingOriginal()) return;
       const backup = this.fallbackVoiceAvailable();
-      // Main voice first, unless it failed a moment ago and the plan B voice is standing in for it.
-      if (!backup || this.options.now() >= this.primaryVoiceDownUntil) plan.push('primary');
-      if (backup) plan.push('fallback');
+      // Main voice first. While it is cooling down after a failure the plan B voice goes first, but the main voice is
+      // still tried if the plan B one cannot speak (no voice for that language on this computer).
+      const plan: VoiceKind[] = !backup ? ['primary'] : this.options.now() >= this.primaryVoiceDownUntil ? ['primary', 'fallback'] : ['fallback', 'primary'];
       let failure: Error | null = null;
       for (const kind of plan) {
+        if (this.relayingOriginal()) return;
         const outcome = await this.speakWith(job, lang, text, kind, markAudioStarted, backup && kind === 'primary');
         if (this.closed) return;
         if (outcome.status !== 'silent') {
@@ -768,7 +772,9 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
           return;
         }
         failure = outcome.error ?? failure;
-        if (kind === 'primary' && backup) this.primaryVoiceDownUntil = this.options.now() + this.options.primaryVoiceCooldownMs;
+        if (kind === 'primary' && backup && this.primaryVoiceDownUntil <= this.options.now()) {
+          this.primaryVoiceDownUntil = this.options.now() + this.options.primaryVoiceCooldownMs;
+        }
       }
       if (failure) this.reportError(failure, 'No se pudo leer la traducción en voz alta; queda el texto en pantalla', job.id);
       this.setOutage('voice', true);
@@ -814,6 +820,12 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
         offs.push(
           session.onAudio((pcm) => {
             if (this.closed) return;
+            // Plan B started relaying the original voice mid-phrase: the rest of this translation is dropped.
+            if (this.relayingOriginal()) {
+              session.cancel();
+              finish();
+              return;
+            }
             if (firstByteAt === null) {
               firstByteAt = this.options.now();
               if (timer) {

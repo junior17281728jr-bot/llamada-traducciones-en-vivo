@@ -190,7 +190,8 @@ export function handleOperatorSocket(ws: WebSocket, req: IncomingMessage, deps: 
           message.as === 'operator'
             ? deps.debug.sayAsOperator(id, callId, message.text, message.lang)
             : deps.debug.sayAsPassenger(callId, message.text, message.lang);
-        if (!ok) fail('unknown_call', 'No se pudo simular la voz en esta llamada', callId);
+        // Not `unknown_call`: the call exists (it may be a real WhatsApp call), only the simulated voice is refused.
+        if (!ok) fail('debug_disabled', 'En esta llamada no se puede simular la voz (es una llamada real o ya terminó)', callId);
         break;
       }
       case 'auth.login':

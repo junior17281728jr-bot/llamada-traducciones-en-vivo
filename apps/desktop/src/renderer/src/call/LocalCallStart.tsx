@@ -101,7 +101,9 @@ export function LocalCallStart() {
         ? 'Faltan los dispositivos de los cables. Elígelos en Ajustes > Audio.'
         : inCall
           ? 'Ya tienes una llamada en curso. Termínala antes de empezar otra.'
-          : null;
+          : state.watch.status === 'starting'
+            ? 'La llamada de WhatsApp ya está entrando sola.'
+            : null;
   const canStart = blocked === null && label.trim().length > 0;
   const options = languages.options('passengerSpeaks');
   const error = state.lastError;

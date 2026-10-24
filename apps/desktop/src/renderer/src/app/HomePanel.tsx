@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ServiceStatus } from '@tw/shared';
 import { LocalCallStart } from '../call';
+import { readAudioPref } from '../core/audio-prefs';
 import { useCall } from '../core/CallContext';
 import { canSimulateCall, requestSimulatedCall, type SimulatedCallResult } from '../core/session';
 import type { CallClientState, WatchStatus } from '../core/types';
@@ -107,7 +108,8 @@ function SetupGuide({ state, onOpenSettings }: HomePanelProps) {
   const status = state.systemStatus;
   const keysOk = keyReady(status?.elevenlabs) && keyReady(status?.translator);
   const keysDown = status?.elevenlabs === 'down' || status?.translator === 'down';
-  const cablesOk = state.watch.status !== 'needs_setup';
+  // Read from the saved devices themselves: the watcher status says nothing about them while it is off.
+  const cablesOk = Boolean(readAudioPref('passengerInput') && readAudioPref('passengerOutput'));
   const autoOk = state.watch.enabled;
   const steps = [
     {

@@ -98,7 +98,8 @@ export function createProviders(config: ServerConfig, options: CreateProvidersOp
         env,
         pipeline: pipelineOptions,
         defaultVoiceId: () => settings().voiceId ?? DEFAULT_ELEVENLABS_VOICE_ID,
-        ...(options.systemVoice ? { fallbackTts: new SystemTtsProvider(options.systemVoice) } : {}),
+        // No computer voice on this platform (a Linux server): no plan B voice at all, so the main voice is never skipped.
+        ...(options.systemVoice && options.systemVoice.platform !== 'none' ? { fallbackTts: new SystemTtsProvider(options.systemVoice) } : {}),
         fallbackPolicy: () => {
           const current = settings();
           return { systemVoice: current.fallbackSystemVoice, originalVoice: current.fallbackOriginalVoice };

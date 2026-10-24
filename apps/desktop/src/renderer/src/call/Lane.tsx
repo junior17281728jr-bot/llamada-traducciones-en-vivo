@@ -50,12 +50,17 @@ interface LaneProps {
  * audio and the transcript (original and translation) of what that person says. Colour is never the
  * only cue: every lane also has its name, an icon-like marker and the word "Hablando".
  */
-/** What the lane says when the server relays the ORIGINAL voice of this direction (same language on both ends). */
+/**
+ * What the lane says when the server relays the ORIGINAL voice of this direction: same language on both ends, or
+ * plan B while a service is down (then it says so instead of "mismo idioma").
+ */
 export function directAudioLabel(call: ActiveCall, speaker: Speaker): string | null {
   const direct = call.directAudio;
   if (!direct) return null;
-  if (speaker === 'passenger') return direct.passengerToOperator ? 'Oyes su voz original (mismo idioma)' : null;
-  return direct.operatorToPassenger ? 'El pasajero oye tu voz original (mismo idioma)' : null;
+  const planB = speaker === 'passenger' ? call.fallback?.passengerToOperator.originalVoice : call.fallback?.operatorToPassenger.originalVoice;
+  const reason = planB ? 'plan B: sin traducir' : 'mismo idioma';
+  if (speaker === 'passenger') return direct.passengerToOperator ? `Oyes su voz original (${reason})` : null;
+  return direct.operatorToPassenger ? `El pasajero oye tu voz original (${reason})` : null;
 }
 
 export function Lane({ speaker, name, call, source, colorToken, subtitle, warning }: LaneProps) {

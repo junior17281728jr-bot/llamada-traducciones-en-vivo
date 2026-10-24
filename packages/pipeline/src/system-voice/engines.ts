@@ -241,7 +241,7 @@ export const WINDOWS_VOICE_SCRIPT = [
 
 /** What the engine needs from a child process (Node's `ChildProcess` fits; tests pass a fake). */
 export interface VoiceWorkerProcess {
-  stdin: { write(data: string): unknown; end(): unknown };
+  stdin: { write(data: string): unknown; end(): unknown; on?(event: 'error', listener: (error: unknown) => void): unknown };
   stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown };
   on(event: 'exit' | 'error', listener: (arg: unknown) => void): unknown;
   kill(): unknown;
@@ -420,6 +420,8 @@ export class WindowsSapiEngine implements SystemVoiceEngine {
     };
     process.on('exit', onGone);
     process.on('error', onGone);
+    // Writing to a worker that has just died raises EPIPE on stdin; unhandled, it would take the whole app down.
+    process.stdin.on?.('error', onGone);
     this.worker = worker;
     return worker;
   }

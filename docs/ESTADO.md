@@ -2,7 +2,33 @@
 
 Regla: aquí no se marca como funcional nada que solo esté simulado. Tres listas: **probado contra simuladores**, **sin verificar contra servicios reales** y **pendiente**. Última actualización: corrección tras la revisión de seguridad y de corrección/honestidad (ver «Corregido en la revisión»).
 
-**Resumen en una línea:** todo el recorrido (llamada entrante o saliente → reparto → transcripción → traducción → voz → ondas → historial con grabación) funciona **contra simuladores locales** y está cubierto por 527 pruebas automáticas (vitest) más una prueba de navegador real (Playwright + Chromium). **Nada ha tocado un servicio real**: ni ElevenLabs, ni Anthropic, ni Twilio, ni Meta, ni WhatsApp, ni un micrófono, ni Electron.
+**Resumen en una línea:** todo el recorrido funciona contra simuladores y está cubierto por pruebas automáticas (vitest) y de navegador (Playwright + Chromium). Contra sistemas reales solo se ha probado la **voz del ordenador** (Mac y Windows reales en GitHub Actions). **No han tocado un servicio real**: ElevenLabs y Anthropic con clave, Twilio, Meta, WhatsApp, un micrófono o cables de audio reales, ni la app de Electron abierta.
+
+## Versión actual: app instalada con traducción real, plan B, entrada automática y diseño blanco y azul
+
+### Qué hace
+
+- **`PROVIDERS=auto` en la app de escritorio**: la «llamada de prueba» sigue simulada (y lo dice); las llamadas de WhatsApp de ese ordenador («modo audio del PC») usan los clientes reales de ElevenLabs (voz a texto y texto a voz) y Claude (traducción) con las claves de Ajustes. Voz por defecto: «George» (`JBFqnCBsd6RMkjVDRZzb`, UNVERIFIED que exista en todas las cuentas); en Ajustes > Voz y plan B se elige una de la cuenta (GET `/v1/voices`, UNVERIFIED).
+- **Plan B**: si la voz de ElevenLabs falla (no abre, error antes de sonar o 6 s sin audio), la frase la lee la **voz del ordenador** y las siguientes también durante 60 s; si la transcripción no conecta, la traducción falla o ninguna voz puede leer, el sentido afectado pasa la **voz original sin traducir** (sin solaparse con voz traducida) y vuelve solo cuando el servicio responde. Aviso «Plan B activo» en la pantalla de llamada.
+- **Entrada automática de WhatsApp**: sin llamada, la app escucha el cable A; con ~0,6 s de sonido (timbre o voz) en 1,5 s inicia la llamada local reutilizando esa captura y enviando los 2 s anteriores; tras una llamada espera 2,5 s de silencio antes de volver a escuchar. Una llamada local con el cable en silencio N segundos (30 por defecto; 20 s a 2 min o nunca) muestra 10 s de cuenta atrás con «Sigo en la llamada» y luego cuelga.
+- **Pantallas**: inicio con tarjeta de WhatsApp (estado, medidor del cable A, interruptor), guía «Empezar en 3 pasos», llamada de prueba e inicio manual; Ajustes simplificado (claves de ElevenLabs y Anthropic con dónde conseguirlas, Voz y plan B, Audio y WhatsApp con guía de cables para Mac y Windows, Idiomas); sin Marcador en la app de escritorio; tema único blanco y azul Tairs.
+
+### Probado de verdad (sistemas reales)
+
+- **Voz del ordenador en un Mac real** (GitHub Actions, macOS 26 arm64, 184 voces): español 3,05 s de audio en 1,6 s y inglés 3,35 s en 1,3 s.
+- **Voz del ordenador en un Windows real** (Windows Server 2025, voces David y Zira): inglés 4,86 s en 2,4 s (incluye el arranque de PowerShell). El servidor de GitHub no trae voz española, así que en español respondió «no hay voz para es» (sin leer el español con una voz inglesa). Un Windows en español trae la suya; otras se añaden en Configuración > Hora e idioma > Voz.
+
+### Probado contra simuladores
+
+- Pipeline: plan B con voces que fallan al abrir, que dan error antes de sonar y que nunca responden; enfriamiento de 60 s y vuelta a la voz principal; voz original mientras falla la traducción o no conecta la transcripción (y el audio ya oído no se traduce después); sin plan B no se informa nada.
+- Servidor: la llamada local usa sus propios proveedores (`localPipelines`) y la del canal simulado los suyos; aviso `call.fallback` y reenvío `0x03` del pasajero cuando falla la traducción; **app integrada (`PROVIDERS=auto`) de punta a punta**: sin claves, `system.status` dice `unconfigured`, la llamada local abre el cliente real de ElevenLabs, que falla por falta de clave, y el pasajero se oye con su voz original. API de ajustes de voz (solo administrador, validación del identificador), lista de voces, prueba de la voz del ordenador.
+- App: entrada automática (ruido de línea y un «ding» corto no entran; timbre o voz sí; los primeros segundos se envían; tras la llamada espera silencio; apagar, cables sin elegir, rechazo del servidor), cuenta atrás de cierre (cancelable con el botón o con voz), inicio, guía de 3 pasos, barra superior y avisos de plan B.
+
+### Sin verificar
+
+- ElevenLabs y Claude con claves reales (protocolos tomados de la documentación pública; UNVERIFIED).
+- WhatsApp Desktop real con BlackHole o VB-Cable: que el timbre y la voz lleguen por el cable A, el umbral de entrada automática con audio real, y si los sonidos de notificación de WhatsApp salen por el cable A (si lo hacen, una notificación larga podría abrir una llamada que se cierra sola por silencio).
+- La app de Electron abierta en un Mac o un Windows (los instaladores se construyen y la app de Mac se firma ad hoc y se verifica con `codesign`, pero nadie la ha abierto aquí).
 
 ## Qué está solo simulado (y la interfaz lo rotula «Simulado»)
 

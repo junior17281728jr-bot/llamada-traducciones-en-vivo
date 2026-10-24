@@ -167,8 +167,13 @@ export class CallSession {
       operator.onSegment((segment) => this.onSegment(segment)),
       passenger.onStage((event) => this.link.send({ type: 'pipeline.stage', callId: this.callId, ...event })),
       operator.onStage((event) => this.link.send({ type: 'pipeline.stage', callId: this.callId, ...event })),
-      passenger.onAudio((pcm) => this.link.sendBinary(encodeAudioFrame(AudioFrameType.TranslatedPassenger, pcm))),
-      operator.onAudio((pcm) => call.sendAudio(pcm)),
+      // While plan B relays a direction's ORIGINAL voice, no translated audio of that direction goes out: never both at once.
+      passenger.onAudio((pcm) => {
+        if (!this.fallback.passengerToOperator.originalVoice) this.link.sendBinary(encodeAudioFrame(AudioFrameType.TranslatedPassenger, pcm));
+      }),
+      operator.onAudio((pcm) => {
+        if (!this.fallback.operatorToPassenger.originalVoice) call.sendAudio(pcm);
+      }),
       passenger.onLanguageState((event) => {
         this.detected = event.state;
         operator.setPassengerLanguageState(event.state);

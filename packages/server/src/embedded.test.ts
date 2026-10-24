@@ -116,6 +116,12 @@ describe('embedded server (the desktop app)', () => {
     await waitFor(() => binaryTypes.includes(AudioFrameType.OriginalPassenger), 'the passenger voice relayed');
     const fallback = messages.filter((m): m is Extract<ServerMessage, { type: 'call.fallback' }> => m.type === 'call.fallback').at(-1)!;
     expect(fallback.passengerToOperator).toMatchObject({ originalVoice: true });
+
+    // A real call never takes simulated text or synthetic audio, and refusing it does not end the call on screen.
+    ws.send(encodeMessage({ type: 'debug.say', text: 'hello', lang: 'en', as: 'operator' }));
+    ws.send(encodeMessage({ type: 'debug.say', text: 'hello', lang: 'en' }));
+    await waitFor(() => messages.filter((m) => m.type === 'error' && m.code === 'debug_disabled').length === 2, 'both refusals');
+    expect(messages.some((m) => m.type === 'error' && m.code === 'unknown_call')).toBe(false);
     ws.close();
   }, 30_000);
 

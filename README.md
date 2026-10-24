@@ -12,34 +12,44 @@ En la pantalla de llamada hay dos carriles, **«Pasajero»** (azul) y **«Operad
 
 ## Instalar en Mac o Windows (doble clic, sin terminal)
 
-La aplicación de escritorio lleva el servidor dentro: al abrirla arranca su propio servidor en tu equipo, en modo
-simulado, entra sola con un usuario local y ya puedes probarlo todo sin instalar nada más.
+La app de escritorio lo lleva todo dentro: no hay que instalar ni arrancar nada más. Guía paso a paso para quien la
+usa: [`docs/GUIA-RAPIDA.md`](docs/GUIA-RAPIDA.md).
 
-1. Descarga el instalador desde la versión «ultima»:
+1. Descarga el instalador de la versión «ultima»:
    https://github.com/junior17281728jr-bot/llamada-traducciones-en-vivo/releases/tag/ultima
    - Mac: el `.dmg` (`arm64` para chips Apple M1 o posteriores; `x64` para Intel).
    - Windows: el `.exe`.
 2. Mac: abre el `.dmg` y arrastra «Telecomway Traductor» a Aplicaciones. Como no está firmada por Apple, la primera
-   vez macOS la bloquea: intenta abrirla, ve a Ajustes del Sistema > Privacidad y seguridad, baja hasta «Telecomway
-   Traductor se bloqueó» y pulsa **Abrir de todos modos** (en macOS 14 o anterior basta clic derecho > Abrir). Si dice
-   «está dañada», abre Terminal y ejecuta `xattr -cr "/Applications/Telecomway Traductor.app"` y vuelve a abrirla.
+   vez macOS la bloquea: intenta abrirla, ve a Ajustes del Sistema > Privacidad y seguridad y pulsa **Abrir de todos
+   modos** (en macOS 14 o anterior basta clic derecho > Abrir). Si dice «está dañada», abre Terminal y ejecuta
+   `xattr -cr "/Applications/Telecomway Traductor.app"` y vuelve a abrirla.
    Windows: si sale «Windows protegió su PC», pulsa «Más información» > «Ejecutar de todas formas».
-3. Acepta el permiso del micrófono cuando lo pida.
-4. En la pestaña **Llamada** pulsa **«Recibir llamada de prueba»**: un pasajero simulado llama en inglés, la llamada
-   entra sola y verás la transcripción, la traducción y las dos ondas. Responde hablando por el micrófono o con la caja
-   «Dices tú (en español)».
+3. Sigue la guía «Empezar en 3 pasos» de la pantalla de inicio:
+   1. **Claves**: pega tu clave de ElevenLabs y la de Anthropic en Ajustes > Claves y pulsa «Probar conexión».
+   2. **Cables**: instala los dos cables de audio virtuales y elígelos en Ajustes > Audio y WhatsApp (la guía de la
+      pantalla dice exactamente qué elegir en WhatsApp y en la app, en Mac y en Windows).
+   3. **Entrada automática**: déjala activada.
+4. Contesta o llama por WhatsApp en ese ordenador como siempre: cuando suena o alguien habla, la llamada **entra sola**
+   en la app y se traduce en los dos sentidos. Al colgar en WhatsApp, la traducción se cierra sola tras unos segundos
+   de silencio (con aviso y botón «Sigo en la llamada»).
 
-Qué es y qué no es este modo:
-- Todo es **simulado** (voz, traducción y teléfono): sirve para ver y probar el programa, no para atender pasajeros reales.
-- Los datos (historial, grabaciones, usuario local) se guardan en la carpeta de datos de la app de tu usuario.
-- Para usar ElevenLabs y Claude reales hace falta un servidor propio con `PROVIDERS=elevenlabs` y las claves en Ajustes
-  (ver más abajo); la app puede conectarse a él arrancándola con `TW_SERVER_URL=http://...`.
-- UNVERIFIED: la app de escritorio no se ha podido ejecutar en el entorno donde se construyó (no hay Electron ni Mac).
-  El servidor integrado sí está probado con Node y con pruebas automáticas.
+Qué hace la app instalada (`PROVIDERS=auto`):
+- **Llamadas de WhatsApp de ese ordenador: traducción real** con ElevenLabs (escuchar y hablar) y Claude (traducir),
+  usando las claves de Ajustes.
+- **Plan B si ElevenLabs falla**: si falla su voz, lee la traducción la **voz del ordenador** (Mac: `say`; Windows: la
+  voz de Windows); si falla la transcripción o la traducción, se pasa la **voz original sin traducir** para que nadie
+  se quede en silencio. Se recupera sola. Las dos opciones se pueden apagar en Ajustes > Voz y plan B.
+- **«Recibir llamada de prueba»**: un pasajero simulado en inglés, para ver las pantallas sin gastar saldo. Esa sí es
+  simulada y lo dice.
+- Los datos (historial, grabaciones, claves cifradas, usuario local) se guardan en la carpeta de datos de la app.
 
 ## Estado, en una frase
 
-Todo el recorrido funciona **contra simuladores locales** (voz, traducción y teléfono simulados) y se ha probado de punta a punta por red y en Chromium. **Nada se ha probado contra ElevenLabs, Anthropic, Twilio, Meta, WhatsApp, un micrófono real, cables de audio reales ni el binario de Electron.** Siempre que algo es simulado, la interfaz lo rotula **«Simulado»**; lo no verificado está marcado `UNVERIFIED` en el código. El detalle honesto está en [`docs/ESTADO.md`](docs/ESTADO.md).
+Probado de verdad: todo el recorrido con simuladores, por red y en Chromium (pruebas automáticas), la **voz del
+ordenador** en un Mac y un Windows reales (en cada compilación de GitHub Actions) y el paso a la voz original cuando
+ElevenLabs no responde (de punta a punta con el cliente real de ElevenLabs sin clave). **No probado todavía**: ElevenLabs
+y Anthropic con claves reales, WhatsApp real con cables de audio reales y la app de Electron abierta en un Mac o Windows.
+El detalle honesto está en [`docs/ESTADO.md`](docs/ESTADO.md).
 
 ## Requisitos
 
@@ -51,7 +61,7 @@ Todo el recorrido funciona **contra simuladores locales** (voz, traducción y te
 npm install          # instala todos los workspaces (packages/*, apps/*, tools/*)
 npm run build        # compila paquetes, proceso principal de Electron y la interfaz (Vite)
 npm run typecheck    # TypeScript estricto en los cinco workspaces
-npm test             # vitest run, no interactivo (527 pruebas)
+npm test             # vitest run, no interactivo
 ```
 
 ## Arranque en modo simulado, paso a paso

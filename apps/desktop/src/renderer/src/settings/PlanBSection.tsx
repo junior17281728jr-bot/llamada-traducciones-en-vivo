@@ -53,7 +53,7 @@ export function PlanBSection() {
     setMessage(null);
     try {
       setSettings(await api.putAppSettings(next));
-      setMessage({ tone: 'ok', text: 'Guardado. Se aplica a la próxima frase.' });
+      setMessage({ tone: 'ok', text: 'Guardado. Se aplica desde la próxima llamada.' });
     } catch (cause) {
       if (logoutIfSessionExpired(cause)) return;
       setMessage({ tone: 'danger', text: describeApiError(cause, 'No se pudo guardar') });

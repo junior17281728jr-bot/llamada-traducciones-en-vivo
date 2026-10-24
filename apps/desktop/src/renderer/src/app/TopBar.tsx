@@ -117,7 +117,8 @@ export function TopBar({ session, state, loggingOut, onLogout }: TopBarProps) {
 /** The desktop app: brand, whether the real translation is ready and what WhatsApp is doing. Nothing else. */
 function DesktopTopBar({ state }: { state: CallClientState }) {
   const translation = translationChip(state.systemStatus?.elevenlabs, state.systemStatus?.translator);
-  const watch = WATCH_CHIP[state.watch.status];
+  const testCall = state.call !== null && state.call.simulated && state.call.state !== 'ended';
+  const watch = testCall ? { tone: 'warn', text: 'En pausa durante la llamada de prueba' } : WATCH_CHIP[state.watch.status];
   return (
     <header className="topbar topbar--desktop" data-testid="topbar">
       <div className="topbar__brand">

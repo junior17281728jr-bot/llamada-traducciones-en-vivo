@@ -130,6 +130,7 @@ export async function createApplication(config: ServerConfig, overrides: Applica
     mockForDebug ? createDebugHooks(providers, mockForDebug, manager) : undefined,
     providers.localSimulated ? providers.bus : null,
     manager,
+    providers.localSimulated,
   );
 
   // With real providers a key only ever shows as "configured" until a "Probar conexión" succeeds; the result
@@ -233,8 +234,15 @@ export async function createApplication(config: ServerConfig, overrides: Applica
  * `debug.say {as:'passenger'}` on a local call: the mock channel has no phone for it, so the text goes
  * straight to the utterance bus and the simulated STT pairs it with the real audio arriving from the cable.
  */
-function withLocalDebugHooks(base: DebugHooks | undefined, bus: UtteranceBus | null, manager: CallManager): DebugHooks | undefined {
-  if (!bus) return base;
+function withLocalDebugHooks(base: DebugHooks | undefined, bus: UtteranceBus | null, manager: CallManager, localSimulated: boolean): DebugHooks | undefined {
+  if (!bus) {
+    if (!base || localSimulated) return base;
+    // PROVIDERS=auto: local calls are REAL (WhatsApp on this computer): no synthetic text or audio may enter them.
+    return {
+      sayAsPassenger: (callId, text, lang) => !manager.isLocalCall(callId) && base.sayAsPassenger(callId, text, lang),
+      sayAsOperator: (operatorId, callId, text, lang) => !manager.isLocalCall(callId) && base.sayAsOperator(operatorId, callId, text, lang),
+    };
+  }
   return {
     sayAsPassenger: (callId, text, lang) => {
       if (base?.sayAsPassenger(callId, text, lang)) return true;

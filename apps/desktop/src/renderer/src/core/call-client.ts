@@ -1,6 +1,7 @@
 import {
   AudioFrameType,
   CLIENT_ACCEPTED_FRAME_TYPES,
+  pcm16Rms,
   DEFAULT_FALLBACK_LANGUAGE,
   EnvelopeMeter,
   LEVEL_WINDOW_MS,
@@ -25,11 +26,13 @@ import { reduce, type ClientEvent } from './reducer';
 import { clearSession, websocketUrl, type Session } from './session';
 import { INITIAL_CALL_CLIENT_STATE, type CallActions, type CallClientApi, type CallClientState, type LevelSource, type WatchStatus } from './types';
 import { SpeakingDetector } from './waveform';
-import { AUTO_END_COUNTDOWN_MS, DEFAULT_AUTO_END_SECONDS, PreRoll, SilenceMeter, VoiceTrigger } from './whatsapp-watch';
+import { AUTO_END_COUNTDOWN_MS, CABLE_VOICE_RMS, DEFAULT_AUTO_END_SECONDS, PreRoll, SilenceMeter, VoiceTrigger } from './whatsapp-watch';
 
 /** Label of the calls that enter on their own from WhatsApp on this computer. */
 export const AUTO_LOCAL_LABEL = 'WhatsApp';
 const WATCH_RETRY_MS = 10_000;
+const CABLE_LOST_MESSAGE =
+  'Se ha desconectado la entrada con la voz del pasajero (cable A): ya no llega su voz. Revisa el cable en Ajustes > Audio y WhatsApp y vuelve a empezar la llamada.';
 
 /** Windows kept per lane: 5 seconds of 20 ms windows. */
 export const LEVEL_CAPACITY = 250;
@@ -289,6 +292,8 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     const call = state.call;
     if (!call || call.state !== 'active' || call.muted) return;
     pushLevels('operator', operatorMeter.push(pcm));
+    // The operator talking means the call is still on, even if the passenger is quietly listening.
+    if (call.direction === 'local' && pcm16Rms(pcm) >= CABLE_VOICE_RMS) cableSilence.reset();
     if (socket && socket.readyState === OPEN) socket.send(encodeAudioFrame(AudioFrameType.OperatorMic, pcm));
   };
 
@@ -360,7 +365,13 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     try {
       playback = audio.createPlayback();
       await playback.setSink(output);
-      capture = await audio.startCapture((pcm) => onCablePcm(pcm, token), { deviceId: input, processing: false });
+      capture = await audio.startCapture((pcm) => onCablePcm(pcm, token), {
+        deviceId: input,
+        processing: false,
+        onEnded: () => {
+          if (token === cableToken && state.call?.state === 'active' && state.call.direction === 'local') localError(CABLE_LOST_MESSAGE);
+        },
+      });
     } catch (error) {
       capture?.stop();
       playback?.stop();
@@ -370,11 +381,13 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       }
       return;
     }
-    if (token !== cableToken || !wantConnected || (state.call && state.call.state !== 'ended')) {
+    const online = socket !== null && socket.readyState === OPEN && state.connection === 'connected';
+    if (token !== cableToken || !wantConnected || !online || (state.call && state.call.state !== 'ended')) {
       capture.stop();
       playback.stop();
       if (token === cableToken) {
         watchMode = 'off';
+        if (!online) localError('Se perdió la conexión mientras se preparaba la traducción. Vuelve a intentarlo cuando diga «Conectado».');
         evaluateWatch();
       }
       return;
@@ -422,6 +435,8 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     if (evaluating) return;
     evaluating = true;
     try {
+      // Invariant: an open listening capture always belongs to a listening, starting or in-call watcher.
+      if (watchCapture && watchMode === 'off') stopWatchCapture();
       const enabled = autoWhatsappEnabled();
       const input = readAudioPref('passengerInput');
       const output = readAudioPref('passengerOutput');
@@ -453,7 +468,11 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
         processing: false,
         onEnded: () => {
           if (token !== watchToken) return;
+          const inCall = watchMode === 'call';
           stopWatchCapture();
+          watchMode = 'off';
+          // During a call the operator must know at once: the passenger can no longer be heard.
+          if (inCall) localError(CABLE_LOST_MESSAGE);
           watchFailed('Se ha desconectado la entrada con la voz del pasajero (cable A). Se volverá a intentar en unos segundos.');
         },
       });
@@ -513,6 +532,20 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     }
     if (token !== watchToken || watchMode !== 'starting') {
       playback.stop();
+      if (token === watchToken) {
+        stopWatchCapture();
+        trigger.requireQuiet();
+        evaluateWatch();
+      }
+      return;
+    }
+    if (!socket || socket.readyState !== OPEN || state.connection !== 'connected') {
+      // The connection dropped while the output was being prepared: nothing is left half open.
+      playback.stop();
+      stopWatchCapture();
+      watchMode = 'off';
+      trigger.requireQuiet();
+      evaluateWatch();
       return;
     }
     // From now on the listening capture belongs to the call: ending the call (or a refused start) stops it.
@@ -543,7 +576,11 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       // The passenger's translated voice, or the passenger's own voice when both share the language (0x03), goes to
       // the operator's headphones; the operator's translated voice (local calls) goes to cable B only, never there.
       if (frame.type === AudioFrameType.TranslatedPassenger || frame.type === AudioFrameType.OriginalPassenger) audio.playback.play(frame.pcm);
-      else if (frame.type === AudioFrameType.TranslatedToPassenger && call.direction === 'local') cable?.playback.play(frame.pcm);
+      else if (frame.type === AudioFrameType.TranslatedToPassenger && call.direction === 'local') {
+        cable?.playback.play(frame.pcm);
+        // The passenger is listening to the translation: that silence on cable A is not a hang-up.
+        cableSilence.reset();
+      }
       return;
     }
     const { track, windows } = frame.levels;
@@ -609,7 +646,12 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       if (socket !== ws) return;
       socket = null;
       releasePendingCable();
-      if (watchMode === 'starting') watchMode = 'off';
+      if (watchMode === 'starting') {
+        // A call that was entering never reached the server: release cable A and listen again after reconnecting.
+        stopWatchCapture();
+        watchMode = 'off';
+        trigger.requireQuiet();
+      }
       if (wantConnected) scheduleReconnect('Se perdió la conexión con el servidor. Reconectando…');
     };
   };
@@ -710,6 +752,7 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       if (state.connection !== 'connected') return localError('Sin conexión con el servidor: no se puede empezar la traducción.');
       if (!state.server?.localAudio) return localError('Este servidor no admite el modo audio del PC.');
       if (state.call && state.call.state !== 'ended') return localError('Ya tienes una llamada en curso. Termínala antes de empezar otra.');
+      if (pendingCable || watchMode === 'starting') return localError('La llamada de WhatsApp ya está entrando sola: espera un momento.');
       const input = readAudioPref('passengerInput');
       const output = readAudioPref('passengerOutput');
       if (!input || !output) return localError(LOCAL_DEVICES_MISSING_MESSAGE);
@@ -739,12 +782,12 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     dismissError: () => dispatch({ type: 'clearError' }),
     setAutoWhatsapp(enabled) {
       writeAudioPref('autoWhatsapp', enabled ? '1' : '0');
-      if (!enabled && watchMode === 'listening') stopWatchCapture();
+      if (!enabled && watchMode !== 'starting' && watchMode !== 'call') stopWatchCapture();
       evaluateWatch();
     },
     refreshAudioPrefs() {
       // The cable A device may have changed: listen to the one saved now.
-      if (watchMode === 'listening') stopWatchCapture();
+      if (watchMode !== 'starting' && watchMode !== 'call') stopWatchCapture();
       if (watchRetryTimer) clearTimeout(watchRetryTimer);
       watchRetryTimer = null;
       evaluateWatch();

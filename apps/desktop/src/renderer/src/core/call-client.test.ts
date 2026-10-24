@@ -494,7 +494,7 @@ describe('modo audio del PC', () => {
     expect(audio.cablePlaybacks).toHaveLength(1);
     expect(audio.cablePlaybacks[0]!.sink).toBe('cable-b');
     expect(audio.captures).toHaveLength(1);
-    expect(audio.captures[0]!.options).toEqual({ deviceId: 'cable-a', processing: false });
+    expect(audio.captures[0]!.options).toMatchObject({ deviceId: 'cable-a', processing: false });
     expect(audio.micStarts).toBe(0);
     expect(ws.messages()).toEqual([{ type: 'call.startLocal', label: 'WhatsApp', langHint: 'en', languages }]);
 
@@ -773,6 +773,94 @@ describe('entrada automática de WhatsApp', () => {
     nowMs += 10_000;
     await vi.advanceTimersByTimeAsync(100);
     expect(ws.messages()).toEqual([{ type: 'call.hangup', callId: 'l1' }]);
+  });
+});
+
+describe('entrada automática de WhatsApp: casos difíciles', () => {
+  const loud = (): Uint8Array => generateSinePcm16(300, 20, 0.5);
+  const quiet = (): Uint8Array => silencePcm16(20);
+  const feed = (capture: { onPcm: (pcm: Uint8Array) => void }, make: () => Uint8Array, frames: number): void => {
+    for (let i = 0; i < frames; i++) capture.onPcm(make());
+  };
+  async function connectReady(client: ReturnType<typeof setup>): Promise<FakeSocket> {
+    client.actions.connect();
+    socket().open();
+    socket().receive(authOk(true, true));
+    await flush();
+    socket().sent.length = 0;
+    return socket();
+  }
+
+  it('a connection drop while the call is entering releases cable A and listens again after reconnecting', async () => {
+    setCablePrefs();
+    const client = setup({ reconnectDelaysMs: [10] });
+    await connectReady(client);
+    feed(audio.captures[0]!, loud, 30);
+    socket().drop();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(audio.captureStops).toBe(1);
+    expect(audio.cablePlaybacks.every((playback) => playback.stops >= 1)).toBe(true);
+
+    socket().open();
+    socket().receive(authOk(true, true));
+    await flush();
+    expect(audio.captures).toHaveLength(2);
+    expect(client.getState().watch.status).toBe('arming');
+    feed(audio.captures[1]!, quiet, 130);
+    feed(audio.captures[1]!, loud, 30);
+    await flush();
+    expect(socket().messages().filter((message) => message.type === 'call.startLocal')).toHaveLength(1);
+
+    // And the switch really releases the device.
+    client.actions.disconnect();
+    expect(audio.captureStops).toBeGreaterThanOrEqual(2);
+  });
+
+  it('the operator talking, or the translation playing for the passenger, keeps a quiet WhatsApp call open', async () => {
+    window.localStorage.setItem(AUDIO_PREF_KEYS.autoEndSeconds, '20');
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectReady(client);
+    feed(audio.captures[0]!, loud, 30);
+    await flush();
+    ws.receive(activeLocalCall());
+    await flush();
+
+    feed(audio.captures[0]!, quiet, 1000);
+    audio.onPcm!(generateSinePcm16(300, 20, 0.5));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.getState().call!.autoEndAt).toBeNull();
+
+    feed(audio.captures[0]!, quiet, 1000);
+    ws.receiveBinary(encodeAudioFrame(AudioFrameType.TranslatedToPassenger, generateSinePcm16(300, 20, 0.5)));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.getState().call!.autoEndAt).toBeNull();
+  });
+
+  it('losing cable A during a call says so at once', async () => {
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectReady(client);
+    feed(audio.captures[0]!, loud, 30);
+    await flush();
+    ws.receive(activeLocalCall());
+    await flush();
+    audio.captures[0]!.options.onEnded!();
+    expect(client.getState().lastError?.message).toContain('cable A');
+    expect(client.getState().call!.state).toBe('active');
+  });
+
+  it('a manual start is refused while a WhatsApp call is already entering', async () => {
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectReady(client);
+    feed(audio.captures[0]!, loud, 30);
+    await flush();
+    expect(ws.messages()).toEqual([{ type: 'call.startLocal', label: 'WhatsApp' }]);
+    client.actions.startLocal!('WhatsApp');
+    await flush();
+    expect(ws.messages()).toHaveLength(1);
+    expect(client.getState().lastError?.message).toContain('ya está entrando');
   });
 });
 

@@ -141,7 +141,7 @@ export function CallScreen() {
         />
       </div>
 
-      {state.server?.debug && !ended ? (
+      {state.server?.debug && !ended && (call.simulated || state.server.providers === 'mock') ? (
         <DebugSay languages={languages} onSay={(text, lang, as) => actions.debugSay(text, lang, as)} />
       ) : null}
     </section>
