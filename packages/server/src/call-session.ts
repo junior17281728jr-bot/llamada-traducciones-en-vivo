@@ -8,6 +8,7 @@ import {
   type CallEndReason,
   type CallRecord,
   type ChannelCall,
+  type DirectionFallback,
   type DirectionPipeline,
   type LanguageNotice,
   type LanguageSettings,
@@ -22,6 +23,7 @@ import {
   type TranscriptSegment,
   type TranscriptStore,
   type Unsubscribe,
+  NO_FALLBACK,
   UNKNOWN_LANGUAGE_STATE,
 } from '@tw/shared';
 
@@ -82,6 +84,11 @@ export class CallSession {
   private detected: LanguageState = UNKNOWN_LANGUAGE_STATE;
   private notice: LanguageNotice | null = null;
   private direct: DirectAudio = { passengerToOperator: false, operatorToPassenger: false };
+  /** Plan B of each direction (system voice, original voice relayed while a service is down). */
+  private fallback: { passengerToOperator: DirectionFallback; operatorToPassenger: DirectionFallback } = {
+    passengerToOperator: NO_FALLBACK,
+    operatorToPassenger: NO_FALLBACK,
+  };
   private muted = false;
   private answeredAt = 0;
   private ended = false;
@@ -174,6 +181,8 @@ export class CallSession {
         if (event.notice) this.notice = event.notice;
         this.sendLanguages();
       }),
+      ...(passenger.onFallback ? [passenger.onFallback((state) => this.onFallback('passengerToOperator', state))] : []),
+      ...(operator.onFallback ? [operator.onFallback((state) => this.onFallback('operatorToPassenger', state))] : []),
       passenger.onError((error) => logger.warn('Fallo en el sentido pasajero a operador', { callId: this.callId, error: error.message })),
       operator.onError((error) => logger.warn('Fallo en el sentido operador a pasajero', { callId: this.callId, error: error.message })),
       call.onAudio((pcm) => this.onPassengerAudio(pcm)),
@@ -242,6 +251,7 @@ export class CallSession {
     if (this.ended) return;
     this.sendState();
     this.sendLanguages();
+    if (this.fallback.passengerToOperator !== NO_FALLBACK || this.fallback.operatorToPassenger !== NO_FALLBACK) this.sendFallback();
   }
 
   /** Resolves when the session has finished closing everything. */
@@ -265,11 +275,29 @@ export class CallSession {
     this.passengerPipe?.pushAudio(pcm);
   }
 
+  /**
+   * Same language on both ends, or plan B while transcription/translation/voice is down: that direction relays
+   * the ORIGINAL voice. The pipeline speaks nothing meanwhile, so the two never overlap.
+   */
   private updateDirectAudio(): void {
     this.direct = {
-      passengerToOperator: directAudioFor('passenger_to_operator', this.settings, this.detected),
-      operatorToPassenger: directAudioFor('operator_to_passenger', this.settings, this.detected),
+      passengerToOperator: directAudioFor('passenger_to_operator', this.settings, this.detected) || this.fallback.passengerToOperator.originalVoice,
+      operatorToPassenger: directAudioFor('operator_to_passenger', this.settings, this.detected) || this.fallback.operatorToPassenger.originalVoice,
     };
+  }
+
+  private onFallback(direction: 'passengerToOperator' | 'operatorToPassenger', state: DirectionFallback): void {
+    if (this.ended) return;
+    this.fallback = { ...this.fallback, [direction]: state };
+    const before = this.direct;
+    this.updateDirectAudio();
+    this.deps.logger.warn('Plan B de la traducción', { callId: this.callId, direction, ...state });
+    this.sendFallback();
+    if (before.passengerToOperator !== this.direct.passengerToOperator || before.operatorToPassenger !== this.direct.operatorToPassenger) this.sendLanguages();
+  }
+
+  private sendFallback(): void {
+    this.link.send({ type: 'call.fallback', callId: this.callId, ...this.fallback });
   }
 
   private onSegment(segment: TranscriptSegment): void {

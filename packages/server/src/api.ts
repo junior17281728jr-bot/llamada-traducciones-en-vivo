@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import {
   API_PATHS,
+  AppSettingsSchema,
   DIRECTIONS,
   LoginRequestSchema,
   PutKeysRequestSchema,
@@ -26,11 +27,13 @@ import {
   type SecretsStore,
   type TestService,
   type TranscriptStore,
+  type VoicesResponse,
 } from '@tw/shared';
 import type { CallManager } from './call-manager.js';
 import type { ServerConfig } from './config.js';
 import { LoginRateLimiter, OperatorStore, SessionStore, type OperatorAccount } from './auth.js';
 import { HttpError, SECURITY_HEADERS, parseRange, readJsonBody, sendError, sendJson } from './http-utils.js';
+import type { FileAppSettingsStore } from './stores/app-settings.js';
 import type { LegStream } from './stores/recordings.js';
 
 export interface ApiDeps {
@@ -50,6 +53,10 @@ export interface ApiDeps {
   /** Called after keys change so the server can refresh service statuses. */
   onKeysChanged?: () => void;
   simulated: { providers: boolean; channel: boolean };
+  /** Voice and plan B (GET/PUT /api/settings/app). Absent: those routes answer 404. */
+  appSettings?: Pick<FileAppSettingsStore, 'current' | 'set'>;
+  /** Voices of the ElevenLabs account (GET /api/settings/voices). */
+  listVoices?: () => Promise<VoicesResponse>;
 }
 
 interface Authed {
@@ -232,6 +239,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
       sendJson(res, 200, body);
       return true;
     }
+  }
+
+  if (pathname === API_PATHS.appSettings && deps.appSettings) {
+    requireAdmin(auth);
+    if (method === 'GET') {
+      sendJson(res, 200, deps.appSettings.current);
+      return true;
+    }
+    if (method === 'PUT') {
+      const parsed = AppSettingsSchema.safeParse(await readJsonBody(req, 4096));
+      if (!parsed.success) throw new HttpError(400, 'bad_request', 'Ajustes no válidos (la voz debe ser un identificador de ElevenLabs)');
+      const saved = await deps.appSettings.set(parsed.data);
+      deps.logger.info('Voz y plan B actualizados desde Ajustes', { by: auth.account.id });
+      sendJson(res, 200, saved);
+      return true;
+    }
+  }
+
+  if (pathname === API_PATHS.voices && method === 'GET' && deps.listVoices) {
+    requireAdmin(auth);
+    sendJson(res, 200, await deps.listVoices());
+    return true;
   }
 
   const testMatch = /^\/api\/settings\/test\/([^/]+)$/.exec(pathname);

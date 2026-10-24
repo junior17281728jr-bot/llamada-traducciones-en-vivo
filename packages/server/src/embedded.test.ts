@@ -2,7 +2,16 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { encodeMessage, parseServerMessage, type ServerMessage } from '@tw/shared';
+import {
+  AudioFrameType,
+  concatPcm,
+  encodeAudioFrame,
+  encodeMessage,
+  parseServerMessage,
+  silencePcm16,
+  synthesizeSpeechSignal,
+  type ServerMessage,
+} from '@tw/shared';
 import { simulatePassengerCall, startEmbeddedServer, type EmbeddedServer } from './embedded.js';
 import { tempDataDir } from './test-utils.js';
 
@@ -70,6 +79,45 @@ describe('embedded server (the desktop app)', () => {
     expect((finals[0] as Extract<ServerMessage, { type: 'transcript.segment' }>).segment.translatedText).toBe('Mi vuelo fue cancelado y necesito un hotel.');
     ws.close();
   }, 20_000);
+
+  it('a WhatsApp call on this computer uses the real providers: with no key it says so and relays the passenger voice (plan B)', async () => {
+    const dataDir = await tempDataDir();
+    const server = await startEmbeddedServer({ dataDir, adminPassword: 'clave-local-1234' });
+    running.push(server);
+    const messages: ServerMessage[] = [];
+    const binaryTypes: number[] = [];
+    const ws = new WebSocket(`${server.serverUrl.replace('http', 'ws')}/operator`);
+    ws.on('message', (data: Buffer, isBinary: boolean) => {
+      if (isBinary) {
+        binaryTypes.push(data[0]!);
+        return;
+      }
+      const parsed = parseServerMessage(data.toString('utf8'));
+      if (parsed.ok) messages.push(parsed.value);
+    });
+    await new Promise<void>((resolve) => ws.once('open', () => resolve()));
+    ws.send(encodeMessage({ type: 'auth.login', username: 'admin', password: 'clave-local-1234' }));
+    await waitFor(() => messages.some((m) => m.type === 'auth.ok'), 'login');
+    const auth = messages.find((m): m is Extract<ServerMessage, { type: 'auth.ok' }> => m.type === 'auth.ok')!;
+    expect(auth.server).toMatchObject({ providers: 'auto', localAudio: true });
+    await waitFor(() => messages.some((m) => m.type === 'system.status'), 'the status');
+    const status = messages.filter((m): m is Extract<ServerMessage, { type: 'system.status' }> => m.type === 'system.status').at(-1)!;
+    expect(status).toMatchObject({ elevenlabs: 'unconfigured', translator: 'unconfigured' });
+
+    ws.send(encodeMessage({ type: 'call.startLocal', label: 'WhatsApp' }));
+    await waitFor(() => messages.some((m) => m.type === 'call.state' && m.state === 'active' && m.direction === 'local'), 'the local call');
+    const signal = concatPcm([synthesizeSpeechSignal('hello I need a hotel for tonight please', { pitchHz: 200 }), silencePcm16(200)]);
+    for (let round = 0; round < 3 && !binaryTypes.includes(AudioFrameType.OriginalPassenger); round++) {
+      for (let offset = 0; offset < signal.byteLength; offset += 640) {
+        ws.send(encodeAudioFrame(AudioFrameType.PassengerLocal, signal.slice(offset, offset + 640)));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    await waitFor(() => binaryTypes.includes(AudioFrameType.OriginalPassenger), 'the passenger voice relayed');
+    const fallback = messages.filter((m): m is Extract<ServerMessage, { type: 'call.fallback' }> => m.type === 'call.fallback').at(-1)!;
+    expect(fallback.passengerToOperator).toMatchObject({ originalVoice: true });
+    ws.close();
+  }, 30_000);
 
   it('reports when nobody answers', async () => {
     const dataDir = await tempDataDir();

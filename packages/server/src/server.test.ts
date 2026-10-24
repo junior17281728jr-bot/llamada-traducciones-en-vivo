@@ -197,6 +197,64 @@ async function boot(extraEnv: Record<string, string> = {}, overrides: Omit<Appli
 }
 
 describe('HTTP API', () => {
+  it('voice and plan B: admin only, validated, saved; voices come from the account; the computer voice can be tested', async () => {
+    const requested: string[] = [];
+    const fakeFetch: ApplicationOverrides['fetch'] = async (url) => {
+      requested.push(url);
+      if (url.endsWith('/v1/voices')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            voices: [
+              { voice_id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', labels: { gender: 'male', accent: 'British' } },
+              { voice_id: 'bad id!', name: 'Rota' },
+              { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Ana' },
+            ],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    const spoken: string[] = [];
+    const systemVoice: ApplicationOverrides['systemVoice'] = {
+      platform: 'macos',
+      voices: async () => [{ name: 'Mónica', locale: 'es-ES' }],
+      synthesize: async (text) => {
+        spoken.push(text);
+        return new Uint8Array(6400);
+      },
+      close: async () => undefined,
+    };
+    const { api, login } = await boot({}, { fetch: fakeFetch, systemVoice });
+    const admin = await login(ADMIN);
+    const ana = await login(ANA);
+
+    expect((await api('/api/settings/app', { token: ana })).status).toBe(403);
+    const defaults = await api('/api/settings/app', { token: admin });
+    expect(defaults.json).toEqual({ voiceId: null, fallbackSystemVoice: true, fallbackOriginalVoice: true });
+    expect((await api('/api/settings/app', { method: 'PUT', token: admin, body: { voiceId: '../etc', fallbackSystemVoice: true, fallbackOriginalVoice: true } })).status).toBe(400);
+    const saved = await api('/api/settings/app', { method: 'PUT', token: admin, body: { voiceId: 'EXAVITQu4vr4xnSDxMaL', fallbackSystemVoice: false, fallbackOriginalVoice: true } });
+    expect(saved.status).toBe(200);
+    expect((await api('/api/settings/app', { token: admin })).json).toMatchObject({ voiceId: 'EXAVITQu4vr4xnSDxMaL', fallbackSystemVoice: false });
+
+    const noKey = await api('/api/settings/voices', { token: admin });
+    expect(noKey.json).toMatchObject({ source: 'unavailable', voices: [] });
+    expect(requested).toHaveLength(0);
+    await api('/api/settings/keys', { method: 'PUT', token: admin, body: { keys: { ELEVENLABS_API_KEY: 'sk_prueba_1234' } } });
+    const voices = await api('/api/settings/voices', { token: admin });
+    expect(voices.json.source).toBe('elevenlabs');
+    expect(voices.json.voices).toEqual([
+      { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Ana', description: null },
+      { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', description: 'male · British' },
+    ]);
+    expect((await api('/api/settings/voices', { token: ana })).status).toBe(403);
+
+    const test = await api('/api/settings/test/system-voice', { method: 'POST', token: admin });
+    expect(test.json).toMatchObject({ service: 'system-voice', status: 'ok', contactedRealService: false });
+    expect(spoken).toHaveLength(1);
+  });
+
   it('reports health, logs in, rejects bad credentials and rate-limits repeated failures', async () => {
     const s = await boot();
     // Liveness only: nothing about providers or channels leaves without a session.

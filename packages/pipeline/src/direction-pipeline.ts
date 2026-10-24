@@ -7,16 +7,24 @@
  *   phrases that follow. A phrase already being translated or spoken finishes in its own language and
  *   the audio that is playing is never cut. The voice for the new language is warmed up in the
  *   background beforehand.
+ * - Plan B (`fallback`, off unless the server enables it): when the main voice fails, the phrase is spoken with
+ *   `fallbackTts` (the computer's own voice); while transcription, translation or every voice is down, the
+ *   pipeline reports `originalVoice` and the call session relays the ORIGINAL voice instead, so nobody is left
+ *   in silence. It recovers by itself when the service answers again.
  * - `operator_to_passenger` holds the operator's text (up to `holdMs`) until the passenger's language
  *   is usable, then falls back to a configured language and warns the operator.
  */
 import {
+  NO_FALLBACK,
+  NO_FALLBACK_POLICY,
   normalizeLanguageCode,
   pcm16Rms,
   pcmDurationMs,
   speakerOfDirection,
   type DirectionPipeline,
   type DirectionPipelineConfig,
+  type DirectionFallback,
+  type FallbackPolicy,
   type LanguageCode,
   type LanguageNotice,
   type LanguageSettings,
@@ -47,6 +55,8 @@ export interface DirectionPipelineProviders {
   stt: SttProvider;
   translator: TextTranslator;
   tts: TtsProvider;
+  /** Plan B voice (the computer's own), used when `tts` fails and `fallback.systemVoice` is on. */
+  fallbackTts?: TtsProvider;
 }
 
 export interface DirectionPipelineOptions {
@@ -74,6 +84,14 @@ export interface DirectionPipelineOptions {
   /** Do not translate a phrase that is already in the target language. */
   skipSameLanguage: boolean;
   controller: Partial<LanguageControllerConfig>;
+  /** Plan B allowed for this call (off by default). */
+  fallback: FallbackPolicy;
+  /** With a plan B voice available: longest wait for the first audio of the main voice before switching. */
+  voiceFirstAudioTimeoutMs: number;
+  /** After the main voice fails, the next phrases go straight to the plan B voice for this long, then it is tried again. */
+  primaryVoiceCooldownMs: number;
+  /** When no voice at all could speak, the original voice is relayed for this long before voices are tried again. */
+  voiceRetryMs: number;
   now: () => number;
   logger?: Logger;
 }
@@ -92,8 +110,25 @@ export const DEFAULT_DIRECTION_PIPELINE_OPTIONS: DirectionPipelineOptions = {
   errorDisplayMs: 3000,
   skipSameLanguage: true,
   controller: {},
+  fallback: NO_FALLBACK_POLICY,
+  voiceFirstAudioTimeoutMs: 6000,
+  primaryVoiceCooldownMs: 60_000,
+  voiceRetryMs: 30_000,
   now: () => Date.now(),
 };
+
+/** Why the original voice is being relayed. */
+type Outage = 'stt' | 'translate' | 'voice';
+
+const OUTAGE_DETAIL: Record<Outage, string> = {
+  stt: 'La transcripción no responde: se oye la voz original, sin traducir.',
+  translate: 'La traducción no responde: se oye la voz original, sin traducir.',
+  voice: 'Ninguna voz pudo leer la traducción: se oye la voz original y la traducción queda en pantalla.',
+};
+const SYSTEM_VOICE_DETAIL = 'La voz de ElevenLabs falló: la traducción la lee la voz del ordenador.';
+
+type VoiceKind = 'primary' | 'fallback';
+type SpeakOutcome = { status: 'spoken' | 'partial' | 'silent'; error: Error | null };
 
 interface Job {
   id: string;
@@ -152,6 +187,12 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
   private readonly languageStates = new Emitter<LanguageStateEvent>();
   private readonly audio = new Emitter<PcmChunk>();
   private readonly errors = new Emitter<Error>();
+  private readonly fallbacks = new Emitter<DirectionFallback>();
+  private fallbackState: DirectionFallback = NO_FALLBACK;
+  private readonly outages = new Map<Outage, string>();
+  private usingSystemVoice = false;
+  private primaryVoiceDownUntil = 0;
+  private voiceRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private settings: LanguageSettings;
   /** What the passenger-side detection reports (mirrored from the other direction for `operator_to_passenger`). */
@@ -175,6 +216,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
   private translateChain: Promise<void> = Promise.resolve();
   private speechChain: Promise<void> = Promise.resolve();
   private readonly ttsSessions = new Map<string, Promise<TtsSession>>();
+  private readonly fallbackTtsSessions = new Map<string, Promise<TtsSession>>();
   private readonly waiters = new Set<Waiter>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -250,6 +292,14 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
     return this.errors.on(handler);
   }
 
+  onFallback(handler: (state: DirectionFallback) => void): Unsubscribe {
+    return this.fallbacks.on(handler);
+  }
+
+  getFallback(): DirectionFallback {
+    return this.fallbackState;
+  }
+
   applyLanguageSettings(settings: LanguageSettings): void {
     if (this.closed) return;
     this.settings = settings;
@@ -312,7 +362,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
     for (const waiter of [...this.waiters]) waiter.cancel();
     const closing: Promise<unknown>[] = [];
     if (this.stt) closing.push(this.stt.close());
-    for (const sessionPromise of this.ttsSessions.values()) {
+    for (const sessionPromise of [...this.ttsSessions.values(), ...this.fallbackTtsSessions.values()]) {
       closing.push(
         sessionPromise.then(async (session) => {
           session.cancel();
@@ -323,6 +373,8 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
     await Promise.allSettled(closing);
     this.stt = null;
     this.ttsSessions.clear();
+    this.fallbackTtsSessions.clear();
+    this.fallbacks.clear();
     this.segments.clear();
     this.stages.clear();
     this.languageStates.clear();
@@ -364,9 +416,16 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
           await session.close();
           return;
         }
+        // Back after an outage: the audio kept meanwhile was already heard as the original voice; translating
+        // it now would repeat it late.
+        if (this.outages.has('stt') && this.relayingOriginal()) {
+          this.pending = [];
+          this.pendingMs = 0;
+        }
         this.attachStt(session, lang);
         this.sttBackoffMs = 0;
         this.sttBackoffUntil = 0;
+        this.setOutage('stt', false);
         return;
       } catch (error) {
         if (this.closed) return;
@@ -377,6 +436,7 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
             toError(error),
             `La transcripción no está disponible (${toError(error).message}); se volverá a intentar en ${Math.round(this.sttBackoffMs / 1000)} s`,
           );
+          this.setOutage('stt', true);
           return;
         }
         this.reportError(toError(error), 'No se pudo conectar la transcripción');
@@ -538,9 +598,11 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
           });
           translatedText = result.text;
           detectedFrom = result.detectedFrom;
+          this.setOutage('translate', false);
         } catch (error) {
           failed = true;
           this.reportError(toError(error), 'No se pudo traducir; se muestra el texto original', job.id);
+          this.setOutage('translate', true);
         }
         job.translateMs = this.options.now() - started;
       }
@@ -574,8 +636,9 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
         createdAt: this.options.now(),
       });
 
-      // Spoken unless the session is relaying the original voice for this direction (same language, known for sure).
-      if (!failed && !relay && translatedText) {
+      // Spoken unless the session is relaying the original voice for this direction (same language, known for sure,
+      // or plan B while a service is down).
+      if (!failed && !relay && translatedText && !this.relayingOriginal()) {
         this.awaitingAudio += 1;
         const text = translatedText;
         this.speechChain = this.speechChain
@@ -628,20 +691,37 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
   // Text to speech
   // ---------------------------------------------------------------------------
 
-  private ttsFor(lang: string): Promise<TtsSession> {
-    let promise = this.ttsSessions.get(lang);
+  private ttsFor(lang: string, kind: VoiceKind = 'primary'): Promise<TtsSession> {
+    const sessions = kind === 'primary' ? this.ttsSessions : this.fallbackTtsSessions;
+    const provider = kind === 'primary' ? this.providers.tts : this.providers.fallbackTts;
+    let promise = sessions.get(lang);
     if (!promise) {
-      promise = this.providers.tts.openSession({ lang }).then((session) => {
+      if (!provider) return Promise.reject(new Error('No hay voz de respaldo'));
+      promise = provider.openSession({ lang }).then((session) => {
         session.onError((error) => {
-          this.ttsSessions.delete(lang);
-          this.reportError(error, 'Fallo en la voz traducida');
+          if (sessions.get(lang) === promise) sessions.delete(lang);
+          this.reportError(error, kind === 'primary' ? 'Fallo en la voz traducida' : 'Fallo en la voz del ordenador');
         });
         return session;
       });
-      this.ttsSessions.set(lang, promise);
-      promise.catch(() => this.ttsSessions.delete(lang));
+      sessions.set(lang, promise);
+      promise.catch(() => {
+        if (sessions.get(lang) === promise) sessions.delete(lang);
+      });
     }
     return promise;
+  }
+
+  /** Forgets a voice session that did not answer, so the next phrase opens a fresh one. */
+  private dropTts(lang: string, kind: VoiceKind, session: TtsSession): void {
+    const sessions = kind === 'primary' ? this.ttsSessions : this.fallbackTtsSessions;
+    sessions.delete(lang);
+    session.cancel();
+    void session.close().catch(() => undefined);
+  }
+
+  private fallbackVoiceAvailable(): boolean {
+    return this.options.fallback.systemVoice && this.providers.fallbackTts !== undefined;
   }
 
   /** Warms up the voice of the language the next phrases will use, so a language change leaves no gap. */
@@ -654,6 +734,12 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
     void this.ttsFor(lang)
       .then((session) => session.prewarm())
       .catch((error: unknown) => this.reportError(toError(error), 'No se pudo preparar la voz'));
+    // The plan B voice is warmed up too (on Windows it starts the voice process), quietly: it is only a backup.
+    if (this.fallbackVoiceAvailable()) {
+      void this.ttsFor(lang, 'fallback')
+        .then((session) => session.prewarm())
+        .catch(() => undefined);
+    }
   }
 
   private async speakJob(job: Job, lang: LanguageCode, text: string): Promise<void> {
@@ -665,48 +751,163 @@ export class TranslationDirectionPipeline implements DirectionPipeline {
     };
     try {
       if (this.closed) return;
-      const session = await this.ttsFor(lang);
-      const startedAt = this.options.now();
-      let firstByteAt: number | null = null;
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          const offs: Unsubscribe[] = [];
-          const finish = (): void => {
-            for (const off of offs) off();
-            resolve();
-          };
-          offs.push(
-            session.onAudio((pcm) => {
-              if (this.closed) return;
-              if (firstByteAt === null) {
-                firstByteAt = this.options.now();
-                markAudioStarted();
-                this.speaking = true;
-                this.updateStage(job.id);
-              }
-              this.audio.emit(pcm);
-            }),
-            session.onDone(finish),
-            session.onError(finish),
-          );
-          session.speak(text);
-          session.flush();
-        }),
-        this.closedSignal,
-      ]);
-      if (firstByteAt !== null) {
-        this.latencies.push({
-          sttMs: null,
-          translateMs: job.translateMs,
-          ttsFirstByteMs: firstByteAt - startedAt,
-          totalMs: firstByteAt - job.finalAt,
-        });
+      const plan: VoiceKind[] = [];
+      const backup = this.fallbackVoiceAvailable();
+      // Main voice first, unless it failed a moment ago and the plan B voice is standing in for it.
+      if (!backup || this.options.now() >= this.primaryVoiceDownUntil) plan.push('primary');
+      if (backup) plan.push('fallback');
+      let failure: Error | null = null;
+      for (const kind of plan) {
+        const outcome = await this.speakWith(job, lang, text, kind, markAudioStarted, backup && kind === 'primary');
+        if (this.closed) return;
+        if (outcome.status !== 'silent') {
+          // Spoken (or partly spoken: repeating it with another voice would say it twice).
+          if (kind === 'primary') this.primaryVoiceDownUntil = 0;
+          this.usingSystemVoice = kind === 'fallback';
+          this.setOutage('voice', false);
+          return;
+        }
+        failure = outcome.error ?? failure;
+        if (kind === 'primary' && backup) this.primaryVoiceDownUntil = this.options.now() + this.options.primaryVoiceCooldownMs;
       }
+      if (failure) this.reportError(failure, 'No se pudo leer la traducción en voz alta; queda el texto en pantalla', job.id);
+      this.setOutage('voice', true);
     } finally {
       markAudioStarted();
       this.speaking = false;
       this.updateStage(job.id);
     }
+  }
+
+  /** Speaks `text` with one voice. `silent`: nothing came out (failed, timed out or empty), so another voice may try. */
+  private async speakWith(
+    job: Job,
+    lang: LanguageCode,
+    text: string,
+    kind: VoiceKind,
+    markAudioStarted: () => void,
+    withTimeout: boolean,
+  ): Promise<SpeakOutcome> {
+    let session: TtsSession;
+    try {
+      session = await this.ttsFor(lang, kind);
+    } catch (error) {
+      return { status: 'silent', error: toError(error) };
+    }
+    if (this.closed) return { status: 'silent', error: null };
+    const startedAt = this.options.now();
+    let firstByteAt: number | null = null;
+    let error: Error | null = null;
+    let timedOut = false;
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        const offs: Unsubscribe[] = [];
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const finish = (): void => {
+          if (timer) {
+            clearTimeout(timer);
+            this.timers.delete(timer);
+          }
+          for (const off of offs) off();
+          resolve();
+        };
+        offs.push(
+          session.onAudio((pcm) => {
+            if (this.closed) return;
+            if (firstByteAt === null) {
+              firstByteAt = this.options.now();
+              if (timer) {
+                clearTimeout(timer);
+                this.timers.delete(timer);
+                timer = null;
+              }
+              markAudioStarted();
+              this.speaking = true;
+              this.updateStage(job.id);
+            }
+            this.audio.emit(pcm);
+          }),
+          session.onDone(finish),
+          session.onError((failure) => {
+            error = failure;
+            finish();
+          }),
+        );
+        if (withTimeout) {
+          timer = setTimeout(() => {
+            if (firstByteAt !== null) return;
+            timedOut = true;
+            finish();
+          }, this.options.voiceFirstAudioTimeoutMs);
+          this.timers.add(timer);
+        }
+        session.speak(text);
+        session.flush();
+      }),
+      this.closedSignal,
+    ]);
+    if (timedOut) {
+      this.dropTts(lang, kind, session);
+      error = new Error(`La voz no respondió en ${Math.round(this.options.voiceFirstAudioTimeoutMs / 1000)} s`);
+    }
+    if (firstByteAt !== null) {
+      this.latencies.push({
+        sttMs: null,
+        translateMs: job.translateMs,
+        ttsFirstByteMs: firstByteAt - startedAt,
+        totalMs: firstByteAt - job.finalAt,
+      });
+      return { status: error ? 'partial' : 'spoken', error };
+    }
+    return { status: 'silent', error };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plan B state
+  // ---------------------------------------------------------------------------
+
+  /** True while the call session must relay the original voice of this direction (plan B allowed and a service down). */
+  private relayingOriginal(): boolean {
+    return this.options.fallback.originalVoice && this.outages.size > 0;
+  }
+
+  private setOutage(kind: Outage, down: boolean): void {
+    if (this.closed) return;
+    if (down) {
+      this.outages.delete(kind);
+      this.outages.set(kind, OUTAGE_DETAIL[kind]);
+    } else {
+      this.outages.delete(kind);
+    }
+    if (kind === 'voice') {
+      if (this.voiceRetryTimer) {
+        clearTimeout(this.voiceRetryTimer);
+        this.timers.delete(this.voiceRetryTimer);
+        this.voiceRetryTimer = null;
+      }
+      // While the original voice is relayed nothing is spoken, so the voices get another chance after a while.
+      if (down) {
+        const timer = setTimeout(() => {
+          this.timers.delete(timer);
+          this.voiceRetryTimer = null;
+          this.setOutage('voice', false);
+        }, this.options.voiceRetryMs);
+        this.timers.add(timer);
+        this.voiceRetryTimer = timer;
+      }
+    }
+    this.publishFallback();
+  }
+
+  private publishFallback(): void {
+    const originalVoice = this.relayingOriginal();
+    const systemVoice = this.usingSystemVoice && this.fallbackVoiceAvailable();
+    const detail = originalVoice ? [...this.outages.values()].at(-1)! : systemVoice ? SYSTEM_VOICE_DETAIL : null;
+    const next: DirectionFallback = { systemVoice, originalVoice, detail };
+    const previous = this.fallbackState;
+    if (previous.systemVoice === next.systemVoice && previous.originalVoice === next.originalVoice && previous.detail === next.detail) return;
+    this.fallbackState = next;
+    this.fallbacks.emit(next);
   }
 
   // ---------------------------------------------------------------------------

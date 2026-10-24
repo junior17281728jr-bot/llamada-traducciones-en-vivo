@@ -49,6 +49,7 @@ function newCall(
     mic: previous?.mic ?? 'off',
     endedReason: null,
     directAudio: previous?.directAudio ?? null,
+    fallback: previous?.fallback ?? null,
   };
 }
 
@@ -145,6 +146,14 @@ function reduceServer(state: CallClientState, message: ServerMessage, now: numbe
           directAudio: message.directAudio ?? null,
         },
       };
+    case 'call.fallback': {
+      if (!call || call.callId !== message.callId) return state;
+      const active = (side: typeof message.passengerToOperator): boolean => side.systemVoice || side.originalVoice;
+      const fallback = active(message.passengerToOperator) || active(message.operatorToPassenger)
+        ? { passengerToOperator: message.passengerToOperator, operatorToPassenger: message.operatorToPassenger }
+        : null;
+      return { ...state, call: { ...call, fallback } };
+    }
     case 'pipeline.stage': {
       if (!call || call.callId !== message.callId) return state;
       const speaker = speakerOfDirection(message.direction);

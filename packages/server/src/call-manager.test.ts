@@ -12,7 +12,7 @@ import {
   type ServerMessage,
   type TranscriptSegment,
 } from '@tw/shared';
-import { MockPipelineFactory, MockTts, UtteranceBus, mockVoicePitchHz, utteranceKey } from '@tw/pipeline';
+import { MockPipelineFactory, MockTextTranslator, MockTts, UtteranceBus, mockVoicePitchHz, utteranceKey } from '@tw/pipeline';
 import { CallManager } from './call-manager.js';
 import { CallSession, type OperatorLink } from './call-session.js';
 import { DesktopAudioChannel } from './channel/desktop-audio.js';
@@ -97,6 +97,8 @@ interface WorldOptions {
   local?: boolean;
   /** Seconds a call waits for a disconnected operator to come back. */
   graceSeconds?: number;
+  /** Pipelines of local calls only (PROVIDERS=auto). */
+  localPipelines?: (bus: UtteranceBus) => MockPipelineFactory;
 }
 
 async function world(options: WorldOptions = {}) {
@@ -125,6 +127,7 @@ async function world(options: WorldOptions = {}) {
     channel,
     ...(local ? { localChannel: local } : {}),
     pipelines,
+    ...(options.localPipelines ? { localPipelines: options.localPipelines(bus) } : {}),
     transcripts,
     recordings,
     preferences,
@@ -628,6 +631,49 @@ describe('modo audio del PC (local calls)', () => {
     const free = a.of('call.state').length === 0 ? 'a' : 'b';
     await w2.manager.startLocal!(free, 'WhatsApp');
     expect(w2.operators.get(free)!.of('error').at(-1)).toMatchObject({ code: 'max_calls_reached' });
+  });
+
+  it('local calls use their own pipelines (PROVIDERS=auto) and, while translation is down, relay the original voice (plan B)', async () => {
+    const w = await world({
+      autoAccept: true,
+      localPipelines: (bus) =>
+        new MockPipelineFactory({
+          bus,
+          translator: new MockTextTranslator({ failWhen: () => true }),
+          tts: new MockTts({}),
+          pipeline: { holdMs: 300, receivingHangoverMs: 30, fallback: { systemVoice: true, originalVoice: true } },
+        }),
+    });
+    const op = await w.connect('op1');
+
+    // A call on the main line keeps the main pipelines: translated as usual.
+    const phone = phoneOf(w.channel);
+    phone.incoming('+34600000099', 'en');
+    await waitFor(() => op.of('call.state').some((m) => m.state === 'active'), 'the phone call');
+    phone.say(EN, 'en');
+    await waitFor(() => op.finals('passenger').length === 1, 'the phone phrase');
+    expect(op.finals('passenger')[0]).toMatchObject({ translatedText: EN_ES });
+    await phone.hangup();
+    await waitFor(() => w.manager.activeCalls === 0, 'the phone call to end');
+    op.messages.length = 0;
+    op.binary.length = 0;
+
+    // The local call gets the local pipelines, whose translator is down.
+    await w.manager.startLocal!('op1', 'WhatsApp', 'en');
+    const state = op.of('call.state').at(-1)!;
+    expect(op.of('call.fallback')).toHaveLength(0);
+    w.speakThroughCable('op1', state.callId, EN);
+    await waitFor(() => op.of('call.fallback').some((m) => m.passengerToOperator.originalVoice), 'the plan B notice');
+    expect(op.of('call.fallback').at(-1)!.passengerToOperator.detail).toContain('voz original');
+    expect(op.of('call.languages').at(-1)!.directAudio).toMatchObject({ passengerToOperator: true });
+    expect(op.audio(AudioFrameType.OriginalPassenger).byteLength).toBe(0);
+
+    // From now on the operator hears the passenger's own voice instead of silence.
+    w.speakThroughCable('op1', state.callId, EN);
+    await waitFor(() => op.audio(AudioFrameType.OriginalPassenger).byteLength > 0, 'the original voice relayed');
+    expect(op.audio(AudioFrameType.TranslatedPassenger).byteLength).toBe(0);
+    w.manager.hangup('op1', state.callId);
+    await waitFor(() => op.of('call.ended').length === 1, 'the local call to end');
   });
 
   it('is simply absent when the server has no desktop-audio channel', async () => {

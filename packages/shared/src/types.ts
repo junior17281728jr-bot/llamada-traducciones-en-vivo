@@ -15,8 +15,14 @@ export const DIRECTIONS = ['inbound', 'outbound', 'local'] as const;
  */
 export type Direction = (typeof DIRECTIONS)[number];
 
-export const PROVIDER_MODES = ['mock', 'elevenlabs'] as const;
-/** Which STT/translation/TTS implementations the server runs (`PROVIDERS` env var). */
+export const PROVIDER_MODES = ['mock', 'elevenlabs', 'auto'] as const;
+/**
+ * Which STT/translation/TTS implementations the server runs (`PROVIDERS` env var).
+ * - `mock`: everything simulated.
+ * - `elevenlabs`: ElevenLabs (voice) and Claude (translation) for every call.
+ * - `auto` (the desktop app): the test call stays simulated; "modo audio del PC" calls, which carry REAL audio,
+ *   use ElevenLabs and Claude with the keys saved in Ajustes.
+ */
 export type ProviderMode = (typeof PROVIDER_MODES)[number];
 
 export const CHANNEL_KINDS = ['mock', 'twilio', 'whatsapp', 'desktop-audio'] as const;
@@ -92,6 +98,29 @@ export interface PipelineStageEvent {
   /** Short human-readable detail (mostly for `error`). */
   detail?: string;
 }
+
+/**
+ * Plan B of one translated direction while a real service fails.
+ * - `systemVoice`: the main voice (ElevenLabs) failed and the computer's own voice speaks the translation.
+ * - `originalVoice`: transcription or translation is down, so the ORIGINAL voice is relayed untranslated
+ *   (the call goes on; nobody is left in silence).
+ */
+export interface DirectionFallback {
+  systemVoice: boolean;
+  originalVoice: boolean;
+  /** Spanish explanation for the operator, or null when everything works. */
+  detail: string | null;
+}
+
+export const NO_FALLBACK: DirectionFallback = { systemVoice: false, originalVoice: false, detail: null };
+
+/** Which plan B the operator allows (Ajustes > Si falla ElevenLabs). */
+export interface FallbackPolicy {
+  systemVoice: boolean;
+  originalVoice: boolean;
+}
+
+export const NO_FALLBACK_POLICY: FallbackPolicy = { systemVoice: false, originalVoice: false };
 
 export const SERVICE_STATUSES = ['ok', 'degraded', 'down', 'simulated', 'unconfigured', 'configured'] as const;
 /**

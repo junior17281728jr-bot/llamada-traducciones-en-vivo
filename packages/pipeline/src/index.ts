@@ -33,6 +33,7 @@ export { MockPipelineFactory, utteranceKey, type MockPipelineFactoryOptions } fr
 export * as elevenLabsProtocol from './elevenlabs/protocol.js';
 export { ElevenLabsConfigError, ElevenLabsError, MISSING_ELEVENLABS_KEY_MESSAGE, type ElevenLabsErrorKind, type ElevenLabsService } from './elevenlabs/errors.js';
 export {
+  DEFAULT_ELEVENLABS_VOICE_ID,
   ELEVENLABS_ENV,
   TRANSLATOR_DEFAULT_MODEL,
   configuredVoiceLanguages,
@@ -59,3 +60,25 @@ export {
   type TranslatorErrorKind,
 } from './claude/translator.js';
 export { ElevenLabsPipelineFactory, type ElevenLabsPipelineFactoryOptions, type ProviderSecretName } from './elevenlabs-factory.js';
+
+// Plan B voice: the computer's own (macOS `say`, Windows System.Speech).
+export {
+  MacSayEngine,
+  NoSystemVoiceEngine,
+  SystemVoiceError,
+  WINDOWS_VOICE_SCRIPT,
+  WindowsSapiEngine,
+  createSystemVoiceEngine,
+  languageOfLocale,
+  parseSayVoices,
+  parseWindowsVoices,
+  pickSystemVoice,
+  wavToInternalPcm,
+  type CommandRunner,
+  type SystemVoiceEngine,
+  type SystemVoiceErrorKind,
+  type SystemVoiceInfo,
+  type VoiceWorkerProcess,
+  type VoiceWorkerSpawner,
+} from './system-voice/engines.js';
+export { SystemTtsProvider, type SystemTtsOptions } from './system-voice/system-tts.js';

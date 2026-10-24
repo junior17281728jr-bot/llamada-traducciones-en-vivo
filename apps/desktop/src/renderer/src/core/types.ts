@@ -26,6 +26,7 @@ import type {
   Speaker,
   TranscriptSegment,
   CallEndReason,
+  DirectionFallback,
   Unsubscribe,
 } from '@tw/shared';
 
@@ -114,6 +115,13 @@ export interface ActiveCall {
    * (from `call.languages.directAudio`; null until known or on an older server).
    */
   directAudio?: DirectAudioInfo | null;
+  /** Plan B in use per direction (computer voice, original voice relayed); null while everything works. */
+  fallback?: CallFallbackInfo | null;
+}
+
+export interface CallFallbackInfo {
+  passengerToOperator: DirectionFallback;
+  operatorToPassenger: DirectionFallback;
 }
 
 export interface DirectAudioInfo {

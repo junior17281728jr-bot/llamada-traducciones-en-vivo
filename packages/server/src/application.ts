@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { utteranceKey, type UtteranceBus } from '@tw/pipeline';
+import { createSystemVoiceEngine, utteranceKey, type SystemVoiceEngine, type UtteranceBus } from '@tw/pipeline';
 import {
   DEFAULT_OPERATOR_PREFERENCES,
   type TranscriptStore,
@@ -22,6 +22,8 @@ import { createLogger } from './logger.js';
 import type { DebugHooks } from './operator-socket.js';
 import { createDebugHooks, createProviders, type Providers } from './providers.js';
 import { createTelecomwayServer, type RunningServer } from './server.js';
+import { FileAppSettingsStore } from './stores/app-settings.js';
+import { listElevenLabsVoices } from './voices.js';
 import { FilePreferencesStore } from './stores/preferences.js';
 import { FileRecordingStore } from './stores/recordings.js';
 import { FileSecretsStore } from './stores/secrets.js';
@@ -36,6 +38,10 @@ export interface Application extends RunningServer {
   localChannel: DesktopAudioChannel;
   /** Recording store, or null when RECORD_CALLS is off. */
   recordings: FileRecordingStore | null;
+  /** Voice and plan B (Ajustes). */
+  appSettings: FileAppSettingsStore;
+  /** The computer's own voice (plan B). */
+  systemVoice: SystemVoiceEngine;
   /** Set when the first administrator was created with a generated password (shown once at startup). */
   generatedAdminPassword: string | null;
   purge(): Promise<{ calls: number; recordings: number }>;
@@ -49,6 +55,8 @@ export interface ApplicationOverrides {
   catalog?: LanguageCatalogProvider;
   tester?: ConnectionTester;
   fetch?: FetchLike;
+  /** The computer's own voice; tests pass a fake. Default: `say` on macOS, System.Speech on Windows, none elsewhere. */
+  systemVoice?: SystemVoiceEngine;
 }
 
 /** Builds the whole server from a validated configuration. Nothing listens until `start()`. */
@@ -81,7 +89,12 @@ export async function createApplication(config: ServerConfig, overrides: Applica
   const repaired = await closeCallsLeftOpen(transcripts);
   if (repaired > 0) logger.warn('Llamadas que quedaron abiertas en una ejecución anterior se han cerrado en el historial', { count: repaired });
   const recordings = config.recordCalls ? new FileRecordingStore(config.dataDir) : null;
-  const providers = overrides.providers ?? createProviders(config, { getSecret: (name) => secrets.resolve(name) });
+  const appSettings = new FileAppSettingsStore(config.dataDir);
+  await appSettings.load();
+  const systemVoice = overrides.systemVoice ?? createSystemVoiceEngine();
+  const providers =
+    overrides.providers ??
+    createProviders(config, { getSecret: (name) => secrets.resolve(name), appSettings: () => appSettings.current, systemVoice });
 
   // "Modo audio del PC" exists next to every channel. With CHANNEL=desktop-audio there is no telephone line
   // at all, so the desktop-audio channel (no incoming calls, nothing to dial) is also the main channel.
@@ -95,6 +108,7 @@ export async function createApplication(config: ServerConfig, overrides: Applica
     channel,
     localChannel: local,
     pipelines: providers.pipelines,
+    localPipelines: providers.localPipelines,
     transcripts,
     recordings,
     preferences,
@@ -112,7 +126,11 @@ export async function createApplication(config: ServerConfig, overrides: Applica
   // `debug.say` with simulated providers: the mock channel speaks for simulated phones; local calls get the
   // text through the utterance bus and the real cable audio paces it.
   const mockForDebug = providers.channel instanceof MockCallChannel ? providers.channel : null;
-  const debug = withLocalDebugHooks(mockForDebug ? createDebugHooks(providers, mockForDebug, manager) : undefined, providers.bus, manager);
+  const debug = withLocalDebugHooks(
+    mockForDebug ? createDebugHooks(providers, mockForDebug, manager) : undefined,
+    providers.localSimulated ? providers.bus : null,
+    manager,
+  );
 
   // With real providers a key only ever shows as "configured" until a "Probar conexión" succeeds; the result
   // of the last real test (ok or fail) is what the status reports, and a key change forgets it.
@@ -128,6 +146,7 @@ export async function createApplication(config: ServerConfig, overrides: Applica
   await refreshStatus();
   const tester: ConnectionTester = {
     async test(service) {
+      if (service === 'system-voice') return testSystemVoice(systemVoice);
       const result = await innerTester.test(service);
       const key = service === 'elevenlabs' ? 'elevenlabs' : service === 'anthropic' ? 'translator' : null;
       if (key && result.contactedRealService && (result.status === 'ok' || result.status === 'fail')) {
@@ -157,7 +176,9 @@ export async function createApplication(config: ServerConfig, overrides: Applica
       verification.translator = null;
       void refreshStatus();
     },
-    simulated: { providers: providers.simulatedProviders, channel: channel.simulated },
+    simulated: { providers: providers.simulatedProviders && providers.localSimulated, channel: channel.simulated },
+    appSettings,
+    listVoices: () => listElevenLabsVoices({ getApiKey: () => secrets.resolve('ELEVENLABS_API_KEY'), fetch: fetchImpl, logger }),
     channel,
     socket: { ...(debug ? { debug } : {}), localAudio: manager.localAudioAvailable, systemStatus: () => status },
   });
@@ -181,6 +202,8 @@ export async function createApplication(config: ServerConfig, overrides: Applica
     channel,
     localChannel: local,
     recordings,
+    appSettings,
+    systemVoice,
     generatedAdminPassword,
     purge,
     async start() {
@@ -201,6 +224,7 @@ export async function createApplication(config: ServerConfig, overrides: Applica
       // The server stops the main channel; the local one is separate unless it IS the main channel (stop is idempotent).
       await local.stop();
       if (channel !== providers.channel) await providers.channel.stop();
+      await systemVoice.close().catch(() => undefined);
     },
   };
 }
@@ -220,6 +244,30 @@ function withLocalDebugHooks(base: DebugHooks | undefined, bus: UtteranceBus | n
     },
     sayAsOperator: (operatorId, callId, text, lang) => base?.sayAsOperator(operatorId, callId, text, lang) ?? false,
   };
+}
+
+/** "Probar voz del ordenador": says a short Spanish sentence with the plan B voice, without playing it anywhere. */
+export async function testSystemVoice(engine: SystemVoiceEngine, now: () => number = () => Date.now()): Promise<ConnectionTestResult> {
+  const testedAt = now();
+  const base = { service: 'system-voice' as const, contactedRealService: false, testedAt };
+  if (engine.platform === 'none') {
+    return { ...base, status: 'unconfigured', message: 'Este sistema no tiene voz del ordenador (solo Mac y Windows).', latencyMs: null };
+  }
+  const started = Date.now();
+  try {
+    const pcm = await engine.synthesize('Hola, soy la voz de respaldo del ordenador.', 'es');
+    const latency = Date.now() - started;
+    if (pcm.byteLength < 3200) return { ...base, status: 'fail', message: 'La voz del ordenador no devolvió sonido.', latencyMs: latency };
+    const voice = (await engine.voices()).length;
+    return {
+      ...base,
+      status: 'ok',
+      message: `La voz del ordenador funciona (${latency} ms, ${voice} voces instaladas). Se usará si falla la voz de ElevenLabs.`,
+      latencyMs: latency,
+    };
+  } catch (error) {
+    return { ...base, status: 'fail', message: error instanceof Error ? error.message : 'La voz del ordenador falló.', latencyMs: null };
+  }
 }
 
 function channelStatus(channel: CallChannel): Pick<Extract<ServerMessage, { type: 'system.status' }>, 'channel'> & { detail?: string } {
@@ -252,7 +300,7 @@ export function computeStatus(
 ): Extract<ServerMessage, { type: 'system.status' }> {
   const line = channelStatus(channel);
   const channelDetail = line.detail ? { channel: line.detail } : {};
-  if (providers.simulatedProviders) {
+  if (providers.simulatedProviders && providers.localSimulated) {
     return {
       type: 'system.status',
       elevenlabs: 'simulated',
@@ -264,12 +312,14 @@ export function computeStatus(
   // Real providers: a key alone is "configured"; only a successful "Probar conexión" makes it "ok".
   const eleven = providerStatus(keys.elevenlabs, verification.elevenlabs);
   const translator = providerStatus(keys.translator, verification.translator);
+  const autoDetail =
+    providers.mode === 'auto' ? { channel: 'La llamada de prueba es simulada. Las llamadas de WhatsApp del PC se traducen de verdad.' } : channelDetail;
   return {
     type: 'system.status',
     elevenlabs: eleven.status,
     translator: translator.status,
     channel: config.channel === 'mock' ? 'simulated' : line.channel,
-    detail: { elevenlabs: eleven.detail, translator: translator.detail, ...channelDetail },
+    detail: { elevenlabs: eleven.detail, translator: translator.detail, ...autoDetail },
   };
 }
 

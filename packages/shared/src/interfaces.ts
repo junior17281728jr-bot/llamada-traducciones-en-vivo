@@ -27,6 +27,7 @@ import type {
   Direction,
   LanguageNotice,
   LanguageSettings,
+  DirectionFallback,
   LanguageState,
   OperatorPreferences,
   PipelineDirection,
@@ -302,6 +303,9 @@ export interface DirectionPipeline {
    * channel hint applied before any audio). Optional: older implementations may not expose it.
    */
   getLanguageState?(): LanguageState;
+  /** Plan B in use (system voice, original voice relayed). Optional: simulated pipelines have none. */
+  onFallback?(handler: (state: DirectionFallback) => void): Unsubscribe;
+  getFallback?(): DirectionFallback;
   getMetrics(): PipelineMetrics;
   close(): Promise<void>;
 }

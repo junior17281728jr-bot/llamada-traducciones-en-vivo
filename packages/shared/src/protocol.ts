@@ -221,6 +221,12 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export const ServiceStatusSchema = z.enum(SERVICE_STATUSES);
 
+export const DirectionFallbackSchema = z.object({
+  systemVoice: z.boolean(),
+  originalVoice: z.boolean(),
+  detail: z.string().max(500).nullable(),
+});
+
 export const ServerMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('auth.ok'),
@@ -301,6 +307,16 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   PipelineStageEventSchema.extend({
     type: z.literal('pipeline.stage'),
     callId: CallIdSchema,
+  }),
+  /**
+   * Plan B per direction while a real service fails: the computer's own voice speaks the translation
+   * (`systemVoice`) or the original voice is relayed untranslated (`originalVoice`). Sent when it changes.
+   */
+  z.object({
+    type: z.literal('call.fallback'),
+    callId: CallIdSchema,
+    passengerToOperator: DirectionFallbackSchema,
+    operatorToPassenger: DirectionFallbackSchema,
   }),
   /** Health of the external dependencies; `simulated` means a local mock, never a real service. */
   z.object({
@@ -673,6 +689,8 @@ export const API_PATHS = {
   call: (id: string): string => `/api/calls/${encodeURIComponent(id)}`,
   callAudio: (id: string, leg: string): string =>
     `/api/calls/${encodeURIComponent(id)}/audio/${encodeURIComponent(leg)}`,
+  appSettings: '/api/settings/app',
+  voices: '/api/settings/voices',
 } as const;
 
 /** Body of every non-2xx JSON response. */
@@ -731,8 +749,35 @@ export const PutKeysRequestSchema = z.object({
 });
 export type PutKeysRequest = z.infer<typeof PutKeysRequestSchema>;
 
+// GET/PUT /api/settings/app (admin only): voice and plan B, the same for every operator of this server.
+export const VOICE_ID_PATTERN = /^[A-Za-z0-9]{8,64}$/;
+export const AppSettingsSchema = z.object({
+  /** ElevenLabs `voice_id` for every language; null = the built-in default (see `DEFAULT_ELEVENLABS_VOICE_ID`). */
+  voiceId: z.string().regex(VOICE_ID_PATTERN).nullable(),
+  /** Speak with the computer's own voice when the ElevenLabs voice fails. */
+  fallbackSystemVoice: z.boolean(),
+  /** Relay the original voice, untranslated, while transcription or translation is down. */
+  fallbackOriginalVoice: z.boolean(),
+});
+export type AppSettings = z.infer<typeof AppSettingsSchema>;
+export const DEFAULT_APP_SETTINGS: AppSettings = { voiceId: null, fallbackSystemVoice: true, fallbackOriginalVoice: true };
+
+// GET /api/settings/voices (admin only): the voices of the ElevenLabs account behind the saved key.
+export interface VoiceOption {
+  id: string;
+  name: string;
+  /** Accent, gender... from the voice labels, when ElevenLabs gives them. */
+  description: string | null;
+}
+export interface VoicesResponse {
+  /** `elevenlabs`: listed from the account. `unavailable`: no key or the request failed (see `message`). */
+  source: 'elevenlabs' | 'unavailable';
+  voices: VoiceOption[];
+  message: string | null;
+}
+
 // POST /api/settings/test/:service
-export const TEST_SERVICES = ['elevenlabs', 'anthropic', 'twilio', 'whatsapp'] as const;
+export const TEST_SERVICES = ['elevenlabs', 'anthropic', 'twilio', 'whatsapp', 'system-voice'] as const;
 export type TestService = (typeof TEST_SERVICES)[number];
 
 export const CONNECTION_STATUSES = ['ok', 'fail', 'unconfigured', 'simulated'] as const;

@@ -133,6 +133,8 @@ describe('keys (admin)', () => {
           return testResult(service, { status: 'unconfigured', message: 'Faltan el SID y el token', contactedRealService: false });
         case 'whatsapp':
           return testResult(service, { status: 'simulated', message: 'Canal simulado: no se contactó ningún servicio real.', contactedRealService: false });
+        case 'system-voice':
+          return testResult(service, { status: 'ok', message: 'La voz del ordenador funciona', contactedRealService: false });
       }
     });
     renderWithClient(<SettingsPage />, fakeClient({ operator: ADMIN }));

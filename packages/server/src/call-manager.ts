@@ -36,6 +36,8 @@ export interface CallManagerDeps {
   /** "Modo audio del PC": when present, `call.startLocal` and `PassengerLocal` frames are accepted. */
   localChannel?: LocalCallChannel;
   pipelines: PipelineFactory;
+  /** Pipelines of local calls when they differ (PROVIDERS=auto: real while `pipelines` is simulated). */
+  localPipelines?: PipelineFactory | null;
   transcripts: TranscriptStore;
   recordings: RecordingStore | null;
   preferences: PreferencesStore;
@@ -519,7 +521,7 @@ export class CallManager {
     this.localCalls.set(call.id, call);
     const base = languageSettingsFromPreferences(operator.preferences, this.deps.config.fallbackLang);
     const settings = languages ? mergeLanguageSettings(base, languages) : base;
-    await this.startSession(operator, call, this.baseRecord(call, operatorId), settings, local.simulated);
+    await this.startSession(operator, call, this.baseRecord(call, operatorId), settings, local.simulated, this.deps.localPipelines ?? this.deps.pipelines);
   }
 
   /** Passenger audio captured from the cable: only accepted while the operator's current call is local. */
@@ -587,6 +589,7 @@ export class CallManager {
     record: CallRecord,
     settings: ReturnType<typeof languageSettingsFromPreferences>,
     simulated: boolean = this.deps.channel.simulated,
+    pipelines: PipelineFactory = this.deps.pipelines,
   ): Promise<void> {
     operator.status = 'in_call';
     operator.currentCallId = call.id;
@@ -595,7 +598,7 @@ export class CallManager {
       operatorId: operator.id,
       link: operator.link,
       settings,
-      pipelines: this.deps.pipelines,
+      pipelines,
       transcripts: this.deps.transcripts,
       recordings: this.deps.recordings,
       logger: this.deps.logger,

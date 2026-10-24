@@ -115,7 +115,13 @@ export function readElevenLabsSettings(env: Env): ElevenLabsSettings {
   };
 }
 
-/** `voice_id` configured for a language (`ELEVENLABS_VOICE_<CODE>`), or null. No defaults on purpose. */
+/**
+ * Voice used when nothing else is configured: "George", the multilingual voice of ElevenLabs' own examples.
+ * UNVERIFIED that every account has it; Ajustes lets the operator pick one of their own voices instead.
+ */
+export const DEFAULT_ELEVENLABS_VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb';
+
+/** `voice_id` configured for a language (`ELEVENLABS_VOICE_<CODE>`), or null. No defaults here: the caller decides. */
 export function voiceIdFor(env: Env, lang: string): string | null {
   const name = voiceEnvVarName(lang);
   if (!name) return null;

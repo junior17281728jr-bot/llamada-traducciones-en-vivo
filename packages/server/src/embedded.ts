@@ -1,8 +1,9 @@
 /**
- * The server as the desktop app runs it: in-process, simulated providers and phone line, data in the
- * app's own folder, the operator page served at `/`. Plus a scripted passenger for the "Llamada de
- * prueba" button. Everything here is SIMULATED; it proves the app works end to end on one computer,
- * not that any real service does.
+ * The server as the desktop app runs it: in-process, data in the app's own folder, the operator page served
+ * at `/`. PROVIDERS=auto: "modo audio del PC" calls (WhatsApp on this computer) are translated for real with
+ * ElevenLabs and Claude, using the keys saved in Ajustes, with the computer's own voice as plan B. The
+ * "Llamada de prueba" button stays SIMULATED (a scripted passenger on the simulated line): it shows the screens
+ * work, not that any real service does.
  */
 import { speechSignalDurationMs, type LanguageCode, type Logger } from '@tw/shared';
 import { createApplication, type Application } from './application.js';
@@ -31,7 +32,7 @@ export interface EmbeddedServer {
 
 export async function startEmbeddedServer(options: EmbeddedServerOptions): Promise<EmbeddedServer> {
   const config = loadConfig({
-    PROVIDERS: 'mock',
+    PROVIDERS: 'auto',
     CHANNEL: 'mock',
     HOST: '127.0.0.1',
     PORT: String(options.port ?? 0),

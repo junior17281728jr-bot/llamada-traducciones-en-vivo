@@ -27,6 +27,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Probar la voz del ordenador (plan B) en este sistema real
+        run: node packages/pipeline/scripts/smoke-system-voice.mjs
       - name: Instalador de Windows
         if: matrix.os == 'windows-latest'
         run: npm run package:win -w @tw/desktop
@@ -68,10 +70,11 @@ jobs:
 
           **Windows:** descarga el `.exe`; si aparece el aviso de Windows, pulsa «Más información» > «Ejecutar de todas formas».
 
-          La app necesita el servidor en marcha (ver README).
+          La app es autónoma: no hace falta instalar nada más. Al abrirla, sigue la guía «Empezar» de la pantalla:
+          pega tus claves de ElevenLabs y de Anthropic, elige los cables de audio y deja activada la entrada automática de WhatsApp.
           NOTAS
           gh release delete ultima --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
           gh release create ultima instaladores/*.dmg instaladores/*.exe \
             -R "$GITHUB_REPOSITORY" \
-            --title "Última versión de prueba (sin firmar)" \
+            --title "Telecomway Traductor (última versión, sin firmar)" \
             --notes-file notas.md

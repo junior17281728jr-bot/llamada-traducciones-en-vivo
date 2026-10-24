@@ -5,7 +5,17 @@
  * restart and a missing key fails the first call (with a clear message) rather than the server start.
  */
 import type Anthropic from '@anthropic-ai/sdk';
-import { LANGUAGE_CODES, type DirectionPipeline, type DirectionPipelineConfig, type LanguageCode, type Logger, type PipelineFactory } from '@tw/shared';
+import {
+  LANGUAGE_CODES,
+  NO_FALLBACK_POLICY,
+  type DirectionPipeline,
+  type DirectionPipelineConfig,
+  type FallbackPolicy,
+  type LanguageCode,
+  type Logger,
+  type PipelineFactory,
+  type TtsProvider,
+} from '@tw/shared';
 import { ClaudeTranslator, type ClaudeTranslatorOptions } from './claude/translator.js';
 import { TranslationDirectionPipeline, type DirectionPipelineOptions } from './direction-pipeline.js';
 import { configuredVoiceLanguages, readElevenLabsSettings, voiceIdFor, type ElevenLabsSettings, type Env } from './elevenlabs/settings.js';
@@ -28,6 +38,15 @@ export interface ElevenLabsPipelineFactoryOptions {
   stt?: Partial<Omit<ElevenLabsSttOptions, 'getApiKey'>>;
   tts?: Partial<Omit<ElevenLabsTtsOptions, 'getApiKey' | 'voiceIdFor'>>;
   translator?: Partial<Omit<ClaudeTranslatorOptions, 'getApiKey' | 'createClient'>>;
+  /**
+   * Voice for languages without `ELEVENLABS_VOICE_<CODE>` (read when each voice session opens, so a change in
+   * Ajustes applies to the next phrase). Null: no voice, that language fails with a clear message.
+   */
+  defaultVoiceId?: () => string | null;
+  /** Plan B voice (the computer's own) for when ElevenLabs fails. */
+  fallbackTts?: TtsProvider;
+  /** Plan B allowed, read when each call starts. */
+  fallbackPolicy?: () => FallbackPolicy;
 }
 
 export class ElevenLabsPipelineFactory implements PipelineFactory {
@@ -61,7 +80,7 @@ export class ElevenLabsPipelineFactory implements PipelineFactory {
       ...common,
       ...options.tts,
       getApiKey: () => options.getSecret('ELEVENLABS_API_KEY'),
-      voiceIdFor: (lang) => voiceIdFor(options.env, lang),
+      voiceIdFor: (lang) => voiceIdFor(options.env, lang) ?? options.defaultVoiceId?.() ?? null,
     });
     this.translator = new ClaudeTranslator({
       model: settings.translatorModel,
@@ -75,7 +94,12 @@ export class ElevenLabsPipelineFactory implements PipelineFactory {
   createDirectionPipeline(config: DirectionPipelineConfig): DirectionPipeline {
     const pipelineOptions: Partial<DirectionPipelineOptions> = { ...(this.options.pipeline ?? {}) };
     if (this.options.logger && !pipelineOptions.logger) pipelineOptions.logger = this.options.logger;
-    return new TranslationDirectionPipeline(config, { stt: this.stt, translator: this.translator, tts: this.tts }, pipelineOptions);
+    pipelineOptions.fallback = this.options.fallbackPolicy?.() ?? pipelineOptions.fallback ?? NO_FALLBACK_POLICY;
+    return new TranslationDirectionPipeline(
+      config,
+      { stt: this.stt, translator: this.translator, tts: this.tts, ...(this.options.fallbackTts ? { fallbackTts: this.options.fallbackTts } : {}) },
+      pipelineOptions,
+    );
   }
 
   /** Languages with a voice configured (`ELEVENLABS_VOICE_<CODE>`), for diagnostics and Settings. */
