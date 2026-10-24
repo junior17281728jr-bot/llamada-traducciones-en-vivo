@@ -1,7 +1,7 @@
 import './app.css';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { CallScreen, LocalCallStart } from '../call';
-import { canSimulateCall, requestSimulatedCall, type SimulatedCallResult } from '../core/session';
+import { canSimulateCall } from '../core/session';
 import { useCall } from '../core/CallContext';
 import { api } from '../core/http';
 import { clearSession, useSession, type Session } from '../core/session';
@@ -9,6 +9,7 @@ import type { CallClientState } from '../core/types';
 import { HistoryPage } from '../history';
 import { SettingsPage } from '../settings';
 import { Dialer } from './Dialer';
+import { HomePanel, TestCallCard, type SettingsTarget } from './HomePanel';
 import { IncomingBanner } from './IncomingBanner';
 import { LoginScreen } from './LoginScreen';
 import { TopBar } from './TopBar';
@@ -21,6 +22,20 @@ export const TABS = [
   ['settings', 'Ajustes'],
 ] as const;
 export type TabId = (typeof TABS)[number][0];
+
+/**
+ * The desktop app (PROVIDERS=auto) has no telephone line to dial: calls are made and answered in WhatsApp, so
+ * there is no Marcador, and the first tab is the home screen.
+ */
+export function tabsFor(state: CallClientState): readonly (readonly [TabId, string])[] {
+  if (state.server?.providers !== 'auto') return TABS;
+  const inCall = state.call !== null;
+  return [
+    ['call', inCall ? 'Llamada' : 'Inicio'],
+    ['history', 'Historial'],
+    ['settings', 'Ajustes'],
+  ];
+}
 
 /** Login screen without a session; the operator shell with one. */
 export function AppShell() {
@@ -74,46 +89,6 @@ function IdleCallPanel({ state }: IdleCallPanelProps) {
   );
 }
 
-const TEST_CALL_OUTCOMES: Record<SimulatedCallResult['outcome'], string> = {
-  completed: 'La llamada de prueba ha terminado. Puedes verla en el historial.',
-  not_answered: 'Nadie contestó la llamada de prueba.',
-  rejected: 'La llamada de prueba se rechazó (todas las líneas ocupadas o ningún operador libre).',
-  ended_early: 'La llamada de prueba terminó antes de tiempo.',
-  unsupported: 'La llamada de prueba no está disponible.',
-};
-
-/** Embedded server only: a simulated English-speaking passenger calls, so the whole flow can be tried with no phone line. */
-function TestCallCard() {
-  const [running, setRunning] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  async function start(): Promise<void> {
-    setRunning(true);
-    setMessage(null);
-    const result = await requestSimulatedCall();
-    setRunning(false);
-    if (result) setMessage(result.message ?? TEST_CALL_OUTCOMES[result.outcome]);
-  }
-  return (
-    <div className="card idle__card" data-testid="test-call-card">
-      <h2 className="card__title">
-        Llamada de prueba <span className="badge badge--simulated">Simulado</span>
-      </h2>
-      <p className="muted">
-        Un pasajero simulado llama en inglés (vuelo cancelado, pide hotel). La llamada entra sola, verás la traducción al español y podrás
-        responder con el micrófono o con la caja «Dices tú». El audio es sintético: no demuestra nada sobre llamadas reales.
-      </p>
-      <button type="button" className="button button--primary" disabled={running} onClick={() => void start()}>
-        {running ? 'Llamada en curso…' : 'Recibir llamada de prueba'}
-      </button>
-      {message ? (
-        <p className="notice notice--info" role="status">
-          {message}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 interface ShellProps {
   session: Session;
 }
@@ -121,6 +96,23 @@ interface ShellProps {
 function Shell({ session }: ShellProps) {
   const { state, actions } = useCall();
   const [tab, setTab] = useState<TabId>('call');
+  const [scrollTarget, setScrollTarget] = useState<SettingsTarget | null>(null);
+  const tabs = tabsFor(state);
+  const desktop = state.server?.providers === 'auto';
+
+  // "Poner claves", "Conectar WhatsApp"...: open Ajustes at that section.
+  useEffect(() => {
+    if (!scrollTarget || tab !== 'settings') return undefined;
+    const timer = setTimeout(() => {
+      document.getElementById(scrollTarget)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setScrollTarget(null);
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [scrollTarget, tab]);
+  const openSettings = (target: SettingsTarget): void => {
+    setTab('settings');
+    setScrollTarget(target);
+  };
   const [loggingOut, setLoggingOut] = useState(false);
   const tabRefs = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
 
@@ -144,15 +136,15 @@ function Shell({ session }: ShellProps) {
   }
 
   function onTabKey(event: KeyboardEvent<HTMLDivElement>): void {
-    const index = TABS.findIndex(([id]) => id === tab);
+    const index = tabs.findIndex(([id]) => id === tab);
     let next: number | null = null;
-    if (event.key === 'ArrowRight') next = (index + 1) % TABS.length;
-    else if (event.key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length;
+    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
     else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = TABS.length - 1;
+    else if (event.key === 'End') next = tabs.length - 1;
     if (next === null) return;
     event.preventDefault();
-    const id = TABS[next]![0];
+    const id = tabs[next]![0];
     setTab(id);
     tabRefs.current[id]?.focus();
   }
@@ -174,7 +166,7 @@ function Shell({ session }: ShellProps) {
       ) : null}
 
       <div className="tabs" role="tablist" aria-label="Secciones" onKeyDown={onTabKey}>
-        {TABS.map(([id, label]) => (
+        {tabs.map(([id, label]) => (
           <button
             key={id}
             ref={(element) => {
@@ -209,8 +201,16 @@ function Shell({ session }: ShellProps) {
       ) : null}
 
       <div className="tabpanel" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {tab === 'call' ? state.call ? <CallScreen /> : <IdleCallPanel state={state} /> : null}
-        {tab === 'dialer' ? <Dialer /> : null}
+        {tab === 'call' ? (
+          state.call ? (
+            <CallScreen />
+          ) : desktop ? (
+            <HomePanel state={state} onOpenSettings={openSettings} />
+          ) : (
+            <IdleCallPanel state={state} />
+          )
+        ) : null}
+        {tab === 'dialer' && !desktop ? <Dialer /> : null}
         {tab === 'history' ? <HistoryPage /> : null}
         {tab === 'settings' ? <SettingsPage /> : null}
       </div>

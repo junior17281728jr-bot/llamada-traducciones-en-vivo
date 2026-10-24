@@ -13,6 +13,10 @@ export const AUDIO_PREF_KEYS = {
   passengerInput: 'tw.audio.passengerInput',
   /** "Modo audio del PC": output device WhatsApp uses as its microphone (virtual cable), where the translated operator voice is played. */
   passengerOutput: 'tw.audio.passengerOutput',
+  /** "Entrada automática de WhatsApp": '0' turns it off; anything else (or nothing saved) means on. */
+  autoWhatsapp: 'tw.audio.autoWhatsapp',
+  /** Seconds of silence on cable A before a local call is closed (after a countdown); '0' = never. */
+  autoEndSeconds: 'tw.audio.autoEndSeconds',
 } as const;
 
 export type AudioPrefKey = keyof typeof AUDIO_PREF_KEYS;

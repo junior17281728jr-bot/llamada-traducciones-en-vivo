@@ -7,6 +7,7 @@ import { useLanguageCatalog } from '../core/catalog';
 
 const AUTO = 'auto';
 export const DEFAULT_LOCAL_LABEL = 'WhatsApp';
+/** Kept for the documentation: the cable path has only been exercised with synthetic audio, never with real WhatsApp. */
 export const LOCAL_MODE_UNVERIFIED_WARNING = 'Este modo no está probado todavía con WhatsApp real ni con cables de audio reales.';
 
 type DeviceKind = 'audioinput' | 'audiooutput';
@@ -129,8 +130,8 @@ export function LocalCallStart() {
         <li>Habla por tu micrófono normal: tu voz traducida sale por el cable B, que el otro programa usa como micrófono.</li>
       </ol>
 
-      <p className="notice notice--warn" role="note" data-testid="local-unverified">
-        {LOCAL_MODE_UNVERIFIED_WARNING} Usa auriculares: con altavoces la traducción vuelve a entrar por el micrófono.
+      <p className="notice notice--info" role="note" data-testid="local-unverified">
+        Usa auriculares: con altavoces la traducción vuelve a entrar por el micrófono.
       </p>
 
       <dl className="kv local-start__devices" data-testid="local-devices">

@@ -4,10 +4,10 @@ import type { Direction } from '@tw/shared';
 import { useCall } from '../core/CallContext';
 import { useLanguageCatalog } from '../core/catalog';
 import type { ActiveCall } from '../core/types';
+import { CallBanners } from './CallBanners';
 import { DebugSay } from './DebugSay';
 import { Lane } from './Lane';
 import { LanguagePanel } from './LanguagePanel';
-import { LOCAL_MODE_UNVERIFIED_WARNING } from './LocalCallStart';
 import { StatusStrip } from './StatusStrip';
 import { END_REASON_LABELS, formatDuration, langName, passengerHearsLabel, passengerLanguageLabel } from './labels';
 
@@ -33,7 +33,7 @@ const STATE_TEXT: Record<ActiveCall['state'], string> = {
 const DIRECTION_TEXT: Record<Direction, string> = {
   inbound: 'Llamada entrante',
   outbound: 'Llamada saliente',
-  local: 'Audio del PC',
+  local: 'WhatsApp en este ordenador',
 };
 
 const MIC_WARNING: Partial<Record<ActiveCall['mic'], string>> = {
@@ -90,10 +90,12 @@ export function CallScreen() {
         </div>
       </header>
 
+      {!ended ? <CallBanners call={call} actions={actions} /> : null}
+
       {local && !ended ? (
-        <p className="notice notice--warn" role="note" data-testid="local-call-notice">
-          <strong>Audio del PC.</strong> Usa auriculares: con altavoces, la voz traducida vuelve a entrar por el micrófono. La llamada se contesta y se
-          cuelga en {call.remoteNumber}; aquí solo se traduce su audio a través de los cables virtuales. {LOCAL_MODE_UNVERIFIED_WARNING}
+        <p className="notice notice--info" role="note" data-testid="local-call-notice">
+          <strong>Usa auriculares.</strong> La llamada se contesta y se cuelga en {call.remoteNumber}; aquí se traduce su audio. Al colgar en{' '}
+          {call.remoteNumber}, la traducción se cierra sola tras unos segundos de silencio.
         </p>
       ) : null}
 

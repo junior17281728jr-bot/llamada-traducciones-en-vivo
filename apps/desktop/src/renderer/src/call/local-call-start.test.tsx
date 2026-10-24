@@ -138,7 +138,7 @@ describe('<LocalCallStart>', () => {
   it('shows the devices chosen in Settings by name, the honest warning, and starts with the label and language', async () => {
     const { actions } = renderCard();
     expect(screen.getByRole('heading', { name: 'Modo audio del PC' })).toBeInTheDocument();
-    expect(screen.getByTestId('local-unverified')).toHaveTextContent('Este modo no está probado todavía con WhatsApp real ni con cables de audio reales.');
+    expect(screen.getByTestId('local-unverified')).toHaveTextContent('Usa auriculares');
     expect(await screen.findByText('CABLE Output (VB-Audio Virtual Cable)')).toBeInTheDocument();
     expect(screen.getByText('CABLE-B Input (VB-Audio Cable B)')).toBeInTheDocument();
     expect(screen.queryByTestId('local-devices-missing')).toBeNull();

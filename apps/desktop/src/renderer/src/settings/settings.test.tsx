@@ -21,6 +21,9 @@ vi.mock('../core/http', async (importOriginal) => {
       getKeys: vi.fn(),
       putKeys: vi.fn(),
       testService: vi.fn(),
+      getAppSettings: vi.fn(async () => ({ voiceId: null, fallbackSystemVoice: true, fallbackOriginalVoice: true })),
+      putAppSettings: vi.fn(async (settings: unknown) => settings),
+      listVoices: vi.fn(async () => ({ source: 'unavailable', voices: [], message: 'Primero guarda la clave de ElevenLabs.' })),
     },
   };
 });
@@ -229,8 +232,8 @@ describe('audio', () => {
     loginAs(OPERATOR);
     renderWithClient(<SettingsPage />, fakeClient());
     expect(await screen.findByTestId('audio-unsupported')).toBeInTheDocument();
-    expect(screen.getByTestId('pc-audio-mode')).toHaveTextContent('docs/MODO-AUDIO-PC.md');
-    expect(screen.getByText(/Usa auriculares/)).toBeInTheDocument();
+    expect(screen.getByTestId('cable-guide')).toHaveTextContent('Altavoz');
+    expect(screen.getAllByText(/Usa auriculares/).length).toBeGreaterThan(0);
     fireEvent.change(screen.getByLabelText(/Volumen de la voz traducida/), { target: { value: '0.5' } });
     expect(window.localStorage.getItem('tw.audio.volume')).toBe('0.5');
     expect(screen.getByLabelText(/Volumen de la voz traducida: 50%/)).toBeInTheDocument();
@@ -250,8 +253,8 @@ describe('audio', () => {
     const mic = await screen.findByLabelText('Micrófono');
     await waitFor(() => expect(within(mic).getByRole('option', { name: 'Auriculares USB' })).toBeInTheDocument());
     fireEvent.change(mic, { target: { value: 'mic-1' } });
-    fireEvent.change(screen.getByLabelText('Entrada con la voz del pasajero'), { target: { value: 'cable-in' } });
-    fireEvent.change(screen.getByLabelText('Salida hacia el micrófono del otro programa'), { target: { value: 'cable-out' } });
+    fireEvent.change(screen.getByLabelText('Voz de WhatsApp (cable A)'), { target: { value: 'cable-in' } });
+    fireEvent.change(screen.getByLabelText('Hacia el micrófono de WhatsApp (cable B)'), { target: { value: 'cable-out' } });
     expect(window.localStorage.getItem('tw.audio.input')).toBe('mic-1');
     expect(window.localStorage.getItem('tw.audio.passengerInput')).toBe('cable-in');
     expect(window.localStorage.getItem('tw.audio.passengerOutput')).toBe('cable-out');

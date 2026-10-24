@@ -7,6 +7,7 @@
 import {
   API_PATHS,
   type ApiErrorBody,
+  type AppSettings,
   type CallDetailResponse,
   type ConnectionTestResult,
   type KeysResponse,
@@ -19,6 +20,7 @@ import {
   type PutKeysRequest,
   type RecordingLeg,
   type TestService,
+  type VoicesResponse,
 } from '@tw/shared';
 import { getSession, normalizeServerUrl } from './session';
 
@@ -112,6 +114,12 @@ export const api = {
     apiRequest<KeysResponse>(API_PATHS.keys, { method: 'PUT', body: request }),
   testService: (service: TestService): Promise<ConnectionTestResult> =>
     apiRequest<ConnectionTestResult>(API_PATHS.test(service), { method: 'POST' }),
+
+  /** Admin only: the ElevenLabs voice and the plan B. */
+  getAppSettings: (): Promise<AppSettings> => apiRequest<AppSettings>(API_PATHS.appSettings),
+  putAppSettings: (settings: AppSettings): Promise<AppSettings> => apiRequest<AppSettings>(API_PATHS.appSettings, { method: 'PUT', body: settings }),
+  /** Admin only: the voices of the ElevenLabs account behind the saved key. */
+  listVoices: (): Promise<VoicesResponse> => apiRequest<VoicesResponse>(API_PATHS.voices),
 
   listCalls: (query: ListCallsQuery = {}): Promise<ListCallsResponse> =>
     apiRequest<ListCallsResponse>(`${API_PATHS.calls}${queryString(query)}`),

@@ -117,6 +117,11 @@ export interface ActiveCall {
   directAudio?: DirectAudioInfo | null;
   /** Plan B in use per direction (computer voice, original voice relayed); null while everything works. */
   fallback?: CallFallbackInfo | null;
+  /**
+   * Local call whose cable A has been silent for a long time (WhatsApp probably hung up): epoch ms when the app
+   * closes it unless the operator keeps it. Null otherwise.
+   */
+  autoEndAt?: number | null;
 }
 
 export interface CallFallbackInfo {
@@ -136,7 +141,28 @@ export interface ClientError {
   at: number;
 }
 
+export const WATCH_STATUSES = ['off', 'needs_setup', 'waiting_connection', 'unsupported', 'arming', 'listening', 'starting', 'in_call', 'error'] as const;
+/**
+ * "Entrada automática de WhatsApp":
+ * - `off`: turned off by the operator. `needs_setup`: the cable devices are not chosen yet.
+ * - `waiting_connection` / `unsupported`: no server connection / the server has no "modo audio del PC".
+ * - `arming`: waiting for cable A to be quiet after a call before listening again.
+ * - `listening`: cable A is being listened to; sound there starts the call. `starting`: the call is entering.
+ * - `in_call`: a call is on. `error`: cable A could not be opened (see `message`).
+ */
+export type WatchStatus = (typeof WATCH_STATUSES)[number];
+
+export interface WatchState {
+  enabled: boolean;
+  status: WatchStatus;
+  /** RMS 0..1 of cable A while listening (refreshed a few times a second). */
+  level: number;
+  message: string | null;
+}
+
 export interface CallClientState {
+  /** "Entrada automática de WhatsApp" (modo audio del PC). */
+  watch: WatchState;
   connection: ConnectionState;
   /** Why the connection is not `connected`, when known (Spanish, ready to show). */
   connectionError: string | null;
@@ -191,6 +217,12 @@ export interface CallActions {
    * with the passenger audio taken from the cable devices chosen in Settings (see core/audio-prefs.ts).
    */
   startLocal?(label: string, options?: { langHint?: string; languages?: PartialLanguageSettings }): void;
+  /** Turns the automatic entry of WhatsApp calls on or off (saved on this computer). */
+  setAutoWhatsapp?(enabled: boolean): void;
+  /** Settings changed the audio devices: the automatic entry re-reads them. */
+  refreshAudioPrefs?(): void;
+  /** The silent local call is still going on: cancel the countdown that would close it. */
+  keepCall?(): void;
 }
 
 export interface CallClientApi {
@@ -200,7 +232,10 @@ export interface CallClientApi {
   readonly actions: CallActions;
 }
 
+export const INITIAL_WATCH_STATE: WatchState = { enabled: true, status: 'waiting_connection', level: 0, message: null };
+
 export const INITIAL_CALL_CLIENT_STATE: CallClientState = {
+  watch: INITIAL_WATCH_STATE,
   connection: 'disconnected',
   connectionError: null,
   server: null,

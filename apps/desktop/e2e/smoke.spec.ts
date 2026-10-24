@@ -177,25 +177,21 @@ test.describe('llamada simulada de punta a punta (servidor real en modo simulado
 });
 
 test.describe('pantalla de inicio en Chromium', () => {
-  test.describe('tema oscuro del sistema', () => {
-    test.use({ colorScheme: 'dark' });
+  // One theme, white and Tairs blue, whatever the system prefers.
+  for (const colorScheme of ['dark', 'light'] as const) {
+    test.describe(`sistema en modo ${colorScheme === 'dark' ? 'oscuro' : 'claro'}`, () => {
+      test.use({ colorScheme });
 
-    test('carga la pantalla de inicio de sesión en oscuro', async ({ page }) => {
-      await page.goto('/');
-      await expect(page.getByRole('heading', { name: 'Telecomway' })).toBeVisible();
-      await expect(page.getByTestId('login-screen')).toBeVisible();
-      expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(11, 18, 32)');
+      test('la pantalla de inicio de sesión es blanca y azul', async ({ page }) => {
+        await page.goto('/');
+        await expect(page.getByRole('heading', { name: 'Telecomway' })).toBeVisible();
+        await expect(page.getByTestId('login-screen')).toBeVisible();
+        expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(243, 247, 253)');
+        expect(await page.evaluate(() => getComputedStyle(document.querySelector('.card')!).backgroundColor)).toBe('rgb(255, 255, 255)');
+        expect(await page.evaluate(() => getComputedStyle(document.querySelector('.button--primary')!).backgroundColor)).toBe('rgb(31, 95, 214)');
+      });
     });
-  });
-
-  test.describe('tema claro del sistema', () => {
-    test.use({ colorScheme: 'light' });
-
-    test('sigue prefers-color-scheme', async ({ page }) => {
-      await page.goto('/');
-      expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(244, 246, 251)');
-    });
-  });
+  }
 
   test('no desborda horizontalmente a 360 px', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 640 });

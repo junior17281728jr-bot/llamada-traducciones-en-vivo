@@ -14,6 +14,7 @@ import {
   type ConnectionState,
   type LaneState,
   type MicState,
+  type WatchState,
 } from './types';
 
 export type ClientEvent =
@@ -24,7 +25,9 @@ export type ClientEvent =
   /** A problem found on this computer (audio devices), shown like a server error. */
   | { type: 'error'; code: ClientError['code']; message: string }
   | { type: 'dismissEnded' }
-  | { type: 'clearError' };
+  | { type: 'clearError' }
+  | { type: 'watch'; patch: Partial<WatchState> }
+  | { type: 'autoEnd'; at: number | null };
 
 export const IDLE_LANE: LaneState = { stage: 'idle', stageDetail: null, speaking: false, levelsFlowing: true };
 
@@ -50,6 +53,7 @@ function newCall(
     endedReason: null,
     directAudio: previous?.directAudio ?? null,
     fallback: previous?.fallback ?? null,
+    autoEndAt: previous?.autoEndAt ?? null,
   };
 }
 
@@ -89,6 +93,14 @@ export function reduce(state: CallClientState, event: ClientEvent, now: number):
       return state.call?.state === 'ended' ? { ...state, call: null } : state;
     case 'clearError':
       return { ...state, lastError: null };
+    case 'watch': {
+      const next = { ...state.watch, ...event.patch };
+      const same = (Object.keys(next) as (keyof WatchState)[]).every((key) => next[key] === state.watch[key]);
+      return same ? state : { ...state, watch: next };
+    }
+    case 'autoEnd':
+      if (!state.call || (state.call.autoEndAt ?? null) === event.at) return state;
+      return { ...state, call: { ...state.call, autoEndAt: event.at } };
     case 'server':
       return reduceServer(state, event.message, now);
   }
@@ -166,7 +178,7 @@ function reduceServer(state: CallClientState, message: ServerMessage, now: numbe
     case 'call.ended': {
       const incoming = state.incoming?.callId === message.callId ? null : state.incoming;
       if (!call || call.callId !== message.callId) return { ...state, incoming };
-      return { ...state, incoming, call: { ...call, state: 'ended', endedReason: message.reason } };
+      return { ...state, incoming, call: { ...call, state: 'ended', endedReason: message.reason, autoEndAt: null } };
     }
     case 'error': {
       const next = { ...state, lastError: { code: message.code, message: message.message, at: now } };

@@ -22,9 +22,6 @@ function declarations(selector: string): Map<string, string> {
 }
 
 const base = declarations(':root');
-const dark = new Map(base);
-const light = new Map([...base, ...declarations(":root[data-theme='light']")]);
-const lightFromSystem = new Map([...base, ...declarations(":root:not([data-theme='dark'])")]);
 
 function luminance(hex: string): number {
   const [r, g, b] = hex
@@ -53,10 +50,7 @@ const TEXT_TOKENS = [
   '--color-simulated',
 ];
 
-describe.each([
-  ['dark', dark],
-  ['light', light],
-] as const)('%s theme', (_name, theme) => {
+describe.each([['blanco y azul Tairs', base]] as const)('%s theme', (_name, theme) => {
   it.each(TEXT_TOKENS)('%s reaches AA (4.5:1) on every surface', (token) => {
     for (const surface of SURFACES) {
       expect(contrast(theme.get(token)!, theme.get(surface)!), `${token} on ${surface}`).toBeGreaterThanOrEqual(4.5);
@@ -79,14 +73,10 @@ describe.each([
 });
 
 describe('theme plumbing', () => {
-  it('dark is the default and the light values from the system preference match the forced light theme', () => {
-    expect(base.get('--color-bg')).toBe('#0b1220');
-    const forcedLight = declarations(":root[data-theme='light']");
-    expect(forcedLight.size).toBeGreaterThan(10);
-    expect(declarations(":root:not([data-theme='dark'])").size).toBe(forcedLight.size);
-    for (const [name, value] of forcedLight) {
-      expect(lightFromSystem.get(name), name).toBe(value);
-    }
+  it('is one light theme: white surfaces and the Tairs blue accent', () => {
+    expect(base.get('--color-surface')).toBe('#ffffff');
+    expect(base.get('--color-accent')).toMatch(/^#/);
+    expect(css).not.toMatch(/data-theme/);
   });
 
   it('declares the tokens the other teams rely on', () => {

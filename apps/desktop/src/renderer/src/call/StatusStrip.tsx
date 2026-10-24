@@ -30,7 +30,14 @@ export function StatusStrip({ state, onDismissError }: StatusStripProps) {
           {connectionError ? ` ${connectionError}` : ''}
         </p>
       ) : null}
-      {systemStatus ? (
+      {state.server?.providers === 'auto' ? (
+        // Desktop app: the top bar already says whether the real translation is ready. Here only what applies to THIS call.
+        state.call?.simulated ? (
+          <p className="notice notice--simulated" role="note" data-testid="test-call-note">
+            <span className="badge badge--simulated">Simulado</span> Llamada de prueba: voz y traducción simuladas. No usa tus claves ni WhatsApp.
+          </p>
+        ) : null
+      ) : systemStatus ? (
         <ul className="status-strip__services" aria-label="Estado de los servicios">
           {SERVICES.map(([key, label]) => {
             const status = systemStatus[key];

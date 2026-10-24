@@ -19,12 +19,17 @@ import {
   type Speaker,
 } from '@tw/shared';
 import { BrowserAudioIO, MicError, PlaybackError, type AudioIO, type MicHandle, type Playback } from './audio-io';
-import { readAudioPref } from './audio-prefs';
+import { readAudioPref, writeAudioPref } from './audio-prefs';
 import { RingLevelSource } from './levels';
 import { reduce, type ClientEvent } from './reducer';
 import { clearSession, websocketUrl, type Session } from './session';
-import { INITIAL_CALL_CLIENT_STATE, type CallActions, type CallClientApi, type CallClientState, type LevelSource } from './types';
+import { INITIAL_CALL_CLIENT_STATE, type CallActions, type CallClientApi, type CallClientState, type LevelSource, type WatchStatus } from './types';
 import { SpeakingDetector } from './waveform';
+import { AUTO_END_COUNTDOWN_MS, DEFAULT_AUTO_END_SECONDS, PreRoll, SilenceMeter, VoiceTrigger } from './whatsapp-watch';
+
+/** Label of the calls that enter on their own from WhatsApp on this computer. */
+export const AUTO_LOCAL_LABEL = 'WhatsApp';
+const WATCH_RETRY_MS = 10_000;
 
 /** Windows kept per lane: 5 seconds of 20 ms windows. */
 export const LEVEL_CAPACITY = 250;
@@ -128,6 +133,19 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
   let cable: CableIo | null = null;
   let cableToken = 0;
 
+  // "Entrada automática de WhatsApp": cable A is listened to while there is no call; sound there starts one.
+  const trigger = new VoiceTrigger();
+  const preRoll = new PreRoll(2000);
+  const cableSilence = new SilenceMeter();
+  let watchCapture: MicHandle | null = null;
+  let watchOpening = false;
+  let watchToken = 0;
+  /** `starting`: a local call was asked for (by the watcher or by hand). `call`: the watcher's capture feeds the call. */
+  let watchMode: 'off' | 'listening' | 'starting' | 'call' = 'off';
+  let watchLevelAt = 0;
+  let watchRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let evaluating = false;
+
   const notify = (): void => {
     for (const listener of [...listeners]) listener();
   };
@@ -180,6 +198,16 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     }
     // The last waveform stays on screen after hang-up; it is cleared when the screen is dismissed.
     if (after.call === null && before.call !== null) resetLevels();
+    const wasOn = before.call !== null && before.call.state !== 'ended';
+    const callOver = after.call === null || after.call.state === 'ended';
+    if (wasOn && callOver && (watchMode === 'call' || watchMode === 'starting')) {
+      // The call that was on may still be going on in WhatsApp: listen again only after the cable has been quiet.
+      watchMode = 'off';
+      trigger.requireQuiet();
+    }
+    const onlyWatch =
+      before.call === after.call && before.connection === after.connection && before.server === after.server && before.lastError === after.lastError;
+    if (!onlyWatch) evaluateWatch();
   };
 
   const resetLevels = (): void => {
@@ -290,16 +318,30 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     stopCable(cable);
     cable = pendingCable;
     pendingCable = null;
+    cableSilence.reset();
     if (!cable) {
       localError('Esta sesión de audio del PC no tiene preparados los dispositivos de los cables. Termínala y vuelve a empezar desde la pestaña Llamada.');
+      return;
     }
+    if (watchMode === 'starting') {
+      watchMode = 'call';
+      // The first words, said while the call was entering, are not lost.
+      for (const chunk of preRoll.drain()) sendCablePcm(chunk);
+    }
+  };
+
+  /** Cable A audio of the local call: sent as the passenger's voice, and measured to notice that WhatsApp hung up. */
+  const sendCablePcm = (pcm: Uint8Array): void => {
+    const call = state.call;
+    if (!call || call.state !== 'active' || call.direction !== 'local') return;
+    cableSilence.push(pcm);
+    if (socket && socket.readyState === OPEN) socket.send(encodeAudioFrame(AudioFrameType.PassengerLocal, pcm));
   };
 
   /** Audio captured from cable A: sent as the passenger's voice. The lane follows the server's measurement, never these samples. */
   const onCablePcm = (pcm: Uint8Array, token: number): void => {
-    const call = state.call;
-    if (token !== cableToken || !cable || !call || call.state !== 'active' || call.direction !== 'local') return;
-    if (socket && socket.readyState === OPEN) socket.send(encodeAudioFrame(AudioFrameType.PassengerLocal, pcm));
+    if (token !== cableToken || !cable) return;
+    sendCablePcm(pcm);
   };
 
   const prepareAndStartLocal = async (
@@ -309,6 +351,9 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     options: { langHint?: string; languages?: PartialLanguageSettings } | undefined,
   ): Promise<void> => {
     releaseCable();
+    // Started by hand: the automatic entry stops listening so it cannot start a second call meanwhile.
+    stopWatchCapture();
+    watchMode = 'starting';
     const token = cableToken;
     let playback: Playback | null = null;
     let capture: MicHandle | null = null;
@@ -319,12 +364,19 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     } catch (error) {
       capture?.stop();
       playback?.stop();
-      if (token === cableToken) localError(describeLocalAudioError(error));
+      if (token === cableToken) {
+        watchMode = 'off';
+        localError(describeLocalAudioError(error));
+      }
       return;
     }
     if (token !== cableToken || !wantConnected || (state.call && state.call.state !== 'ended')) {
       capture.stop();
       playback.stop();
+      if (token === cableToken) {
+        watchMode = 'off';
+        evaluateWatch();
+      }
       return;
     }
     pendingCable = { capture, playback };
@@ -335,6 +387,146 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       ...(langHint ? { langHint } : {}),
       ...(options?.languages ? { languages: options.languages } : {}),
     });
+  };
+
+  // ---------------------------------------------------------------------------
+  // "Entrada automática de WhatsApp"
+  // ---------------------------------------------------------------------------
+
+  const autoWhatsappEnabled = (): boolean => readAudioPref('autoWhatsapp') !== '0';
+  const autoEndMs = (): number => {
+    const raw = Number(readAudioPref('autoEndSeconds') ?? DEFAULT_AUTO_END_SECONDS);
+    return Number.isFinite(raw) && raw > 0 ? raw * 1000 : 0;
+  };
+
+  const stopWatchCapture = (): void => {
+    watchToken += 1;
+    watchCapture?.stop();
+    watchCapture = null;
+    watchOpening = false;
+    if (watchMode === 'listening' || watchMode === 'call') watchMode = 'off';
+    preRoll.drain();
+  };
+
+  const watchFailed = (message: string): void => {
+    if (watchRetryTimer) clearTimeout(watchRetryTimer);
+    dispatch({ type: 'watch', patch: { status: 'error', level: 0, message } });
+    watchRetryTimer = setTimeout(() => {
+      watchRetryTimer = null;
+      evaluateWatch();
+    }, WATCH_RETRY_MS);
+  };
+
+  /** Decides whether cable A must be listened to right now, opens or closes it, and tells the screen. */
+  const evaluateWatch = (): void => {
+    if (evaluating) return;
+    evaluating = true;
+    try {
+      const enabled = autoWhatsappEnabled();
+      const input = readAudioPref('passengerInput');
+      const output = readAudioPref('passengerOutput');
+      const busy = state.call !== null && state.call.state !== 'ended';
+      let status: WatchStatus;
+      if (!enabled) status = 'off';
+      else if (!input || !output) status = 'needs_setup';
+      else if (!wantConnected || state.connection !== 'connected') status = 'waiting_connection';
+      else if (!state.server?.localAudio) status = 'unsupported';
+      else if (busy || watchMode === 'call') status = 'in_call';
+      else if (watchMode === 'starting') status = 'starting';
+      else if (watchRetryTimer) status = 'error';
+      else status = trigger.armed ? 'listening' : 'arming';
+      const listen = status === 'listening' || status === 'arming';
+      if (listen && !watchCapture && !watchOpening && input) void openWatchCapture(input);
+      if (!listen && watchMode === 'listening') stopWatchCapture();
+      dispatch({ type: 'watch', patch: { enabled, status, ...(status === 'error' ? {} : { message: null }), ...(listen ? {} : { level: 0 }) } });
+    } finally {
+      evaluating = false;
+    }
+  };
+
+  const openWatchCapture = async (input: string): Promise<void> => {
+    watchOpening = true;
+    const token = ++watchToken;
+    try {
+      const handle = await audio.startCapture((pcm) => onWatchPcm(pcm, token), {
+        deviceId: input,
+        processing: false,
+        onEnded: () => {
+          if (token !== watchToken) return;
+          stopWatchCapture();
+          watchFailed('Se ha desconectado la entrada con la voz del pasajero (cable A). Se volverá a intentar en unos segundos.');
+        },
+      });
+      if (token !== watchToken) {
+        handle.stop();
+        return;
+      }
+      watchCapture = handle;
+      watchOpening = false;
+      watchMode = 'listening';
+      evaluateWatch();
+    } catch (error) {
+      if (token !== watchToken) return;
+      watchOpening = false;
+      watchFailed(describeLocalAudioError(error));
+    }
+  };
+
+  const onWatchPcm = (pcm: Uint8Array, token: number): void => {
+    if (token !== watchToken) return;
+    if (watchMode === 'call') {
+      sendCablePcm(pcm);
+      return;
+    }
+    preRoll.push(pcm);
+    if (watchMode !== 'listening') return;
+    const wasArmed = trigger.armed;
+    const triggered = trigger.push(pcm);
+    const t = perfNow();
+    if (t - watchLevelAt > 200) {
+      watchLevelAt = t;
+      dispatch({ type: 'watch', patch: { level: Math.round(trigger.level * 1000) / 1000 } });
+    }
+    if (!wasArmed && trigger.armed) evaluateWatch();
+    if (triggered) void startFromWatch(token);
+  };
+
+  /** Sound on cable A: the WhatsApp call enters the app, using the capture that is already open. */
+  const startFromWatch = async (token: number): Promise<void> => {
+    const output = readAudioPref('passengerOutput');
+    if (!output || state.connection !== 'connected' || (state.call && state.call.state !== 'ended') || pendingCable) return;
+    releaseCable();
+    watchMode = 'starting';
+    evaluateWatch();
+    let playback: Playback | null = null;
+    try {
+      playback = audio.createPlayback();
+      await playback.setSink(output);
+    } catch (error) {
+      playback?.stop();
+      if (token !== watchToken) return;
+      stopWatchCapture();
+      watchMode = 'off';
+      trigger.requireQuiet();
+      watchFailed(describeLocalAudioError(error));
+      return;
+    }
+    if (token !== watchToken || watchMode !== 'starting') {
+      playback.stop();
+      return;
+    }
+    // From now on the listening capture belongs to the call: ending the call (or a refused start) stops it.
+    pendingCable = {
+      capture: {
+        stop: () => {
+          if (token !== watchToken) return;
+          stopWatchCapture();
+          trigger.requireQuiet();
+        },
+      },
+      playback,
+    };
+    sendMessage({ type: 'call.startLocal', label: AUTO_LOCAL_LABEL });
   };
 
   // ---------------------------------------------------------------------------
@@ -382,7 +574,13 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     }
     if (message.type === 'auth.ok') attempt = 0;
     // The server refused `call.startLocal` (busy, no line...): the cable devices prepared for it are released.
-    if (message.type === 'error' && pendingCable && state.call?.state !== 'active') releasePendingCable();
+    if (message.type === 'error' && pendingCable && state.call?.state !== 'active') {
+      releasePendingCable();
+      if (watchMode === 'starting') {
+        watchMode = 'off';
+        trigger.requireQuiet();
+      }
+    }
     dispatch({ type: 'server', message });
   };
 
@@ -411,6 +609,7 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       if (socket !== ws) return;
       socket = null;
       releasePendingCable();
+      if (watchMode === 'starting') watchMode = 'off';
       if (wantConnected) scheduleReconnect('Se perdió la conexión con el servidor. Reconectando…');
     };
   };
@@ -422,7 +621,26 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     reconnectTimer = setTimeout(open, delay);
   };
 
+  /** A local call whose cable A has been silent too long: count down, then close it (WhatsApp most likely hung up). */
+  const checkAutoEnd = (): void => {
+    const call = state.call;
+    if (!call || call.state !== 'active' || call.direction !== 'local') return;
+    const limit = autoEndMs();
+    const t = now();
+    if (limit > 0 && cableSilence.silentMs >= limit) {
+      if (!call.autoEndAt) dispatch({ type: 'autoEnd', at: t + AUTO_END_COUNTDOWN_MS });
+      else if (t >= call.autoEndAt) {
+        dispatch({ type: 'autoEnd', at: null });
+        cableSilence.reset();
+        sendMessage({ type: 'call.hangup', callId: call.callId });
+      }
+    } else if (call.autoEndAt) {
+      dispatch({ type: 'autoEnd', at: null });
+    }
+  };
+
   const runWatchdog = (): void => {
+    checkAutoEnd();
     const call = state.call;
     if (!call || call.state !== 'active') return;
     const t = perfNow();
@@ -469,6 +687,10 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
       watchdog = null;
       stopMic();
       releaseCable();
+      stopWatchCapture();
+      watchMode = 'off';
+      if (watchRetryTimer) clearTimeout(watchRetryTimer);
+      watchRetryTimer = null;
       audio.playback.stop();
       const ws = socket;
       socket = null;
@@ -515,6 +737,22 @@ export function createCallClient(session: Session, deps: CallClientDeps = {}): C
     },
     dismissEndedCall: () => dispatch({ type: 'dismissEnded' }),
     dismissError: () => dispatch({ type: 'clearError' }),
+    setAutoWhatsapp(enabled) {
+      writeAudioPref('autoWhatsapp', enabled ? '1' : '0');
+      if (!enabled && watchMode === 'listening') stopWatchCapture();
+      evaluateWatch();
+    },
+    refreshAudioPrefs() {
+      // The cable A device may have changed: listen to the one saved now.
+      if (watchMode === 'listening') stopWatchCapture();
+      if (watchRetryTimer) clearTimeout(watchRetryTimer);
+      watchRetryTimer = null;
+      evaluateWatch();
+    },
+    keepCall() {
+      cableSilence.reset();
+      dispatch({ type: 'autoEnd', at: null });
+    },
   };
 
   // Output device and volume preferences (Settings writes them; they apply from the next call).

@@ -332,13 +332,13 @@ describe('<CallScreen>', () => {
   it('shows a "modo audio del PC" session with its label, the headphones notice and "Terminar traducción"', () => {
     const { actions } = renderScreen({ call: makeCall({ direction: 'local', remoteNumber: 'WhatsApp', simulated: false }) });
     expect(screen.getByTestId('call-screen')).toHaveAttribute('data-direction', 'local');
-    expect(screen.getByText('Audio del PC')).toBeInTheDocument();
+    expect(screen.getByText('WhatsApp en este ordenador')).toBeInTheDocument();
     expect(screen.getByText('WhatsApp')).toBeInTheDocument();
     expect(screen.queryByText('Llamada entrante')).toBeNull();
     expect(screen.queryByText('Simulado')).toBeNull();
     const notice = screen.getByTestId('local-call-notice');
     expect(notice).toHaveTextContent('Usa auriculares');
-    expect(notice).toHaveTextContent('no está probado todavía con WhatsApp real');
+    expect(notice).toHaveTextContent('la traducción se cierra sola');
     expect(screen.getByTestId('passenger-language')).toHaveTextContent('cable A');
     expect(screen.queryByRole('button', { name: 'Colgar' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Terminar traducción' }));

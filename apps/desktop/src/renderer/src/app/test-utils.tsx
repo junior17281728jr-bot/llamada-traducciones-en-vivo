@@ -43,6 +43,9 @@ export function fakeClient(partial: Partial<CallClientState> = {}): FakeClient {
     dismissEndedCall: vi.fn(),
     dismissError: vi.fn(),
     startLocal: vi.fn(),
+    setAutoWhatsapp: vi.fn(),
+    refreshAudioPrefs: vi.fn(),
+    keepCall: vi.fn(),
   };
   const client: CallClientApi = {
     getState: () => state,

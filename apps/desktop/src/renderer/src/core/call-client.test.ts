@@ -151,6 +151,7 @@ const languages = (s: LanguageSettings = settings): ServerMessage => ({
 let sockets: FakeSocket[];
 let audio: FakeAudio;
 let perf: number;
+let nowMs = 5000;
 
 function setup(options: { reconnectDelaysMs?: number[] } = {}) {
   sockets = [];
@@ -163,7 +164,7 @@ function setup(options: { reconnectDelaysMs?: number[] } = {}) {
       return socket;
     },
     audio,
-    now: () => 5000,
+    now: () => nowMs,
     perfNow: () => perf,
     watchdogMs: 100,
     ...options,
@@ -200,11 +201,16 @@ beforeEach(() => {
   resetSessionForTests();
   setSession(session);
   setCablePrefs(null, null);
+  nowMs = 5000;
+  window.localStorage.removeItem(AUDIO_PREF_KEYS.autoWhatsapp);
+  window.localStorage.removeItem(AUDIO_PREF_KEYS.autoEndSeconds);
 });
 afterEach(() => {
   vi.useRealTimers();
   resetSessionForTests();
   setCablePrefs(null, null);
+  window.localStorage.removeItem(AUDIO_PREF_KEYS.autoWhatsapp);
+  window.localStorage.removeItem(AUDIO_PREF_KEYS.autoEndSeconds);
 });
 
 describe('connection', () => {
@@ -464,6 +470,9 @@ describe('the passenger lane', () => {
 });
 
 describe('modo audio del PC', () => {
+  // These tests start the translation by hand: the automatic entry stays off so it opens nothing of its own.
+  beforeEach(() => window.localStorage.setItem(AUDIO_PREF_KEYS.autoWhatsapp, '0'));
+
   async function connectLocalReady(client: ReturnType<typeof setup>): Promise<FakeSocket> {
     client.actions.connect();
     socket().open();
@@ -622,6 +631,148 @@ describe('modo audio del PC', () => {
     ws.drop();
     expect(audio.captureStops).toBe(2);
     expect(audio.cablePlaybacks[1]!.stops).toBe(1);
+  });
+});
+
+describe('entrada automática de WhatsApp', () => {
+  const loud = (): Uint8Array => generateSinePcm16(300, 20, 0.5);
+  const quiet = (): Uint8Array => silencePcm16(20);
+  const feed = (capture: { onPcm: (pcm: Uint8Array) => void }, make: () => Uint8Array, frames: number): void => {
+    for (let i = 0; i < frames; i++) capture.onPcm(make());
+  };
+
+  async function connectReady(client: ReturnType<typeof setup>): Promise<FakeSocket> {
+    client.actions.connect();
+    socket().open();
+    socket().receive(authOk(true, true));
+    await flush();
+    socket().sent.length = 0;
+    return socket();
+  }
+
+  it('listens to cable A while idle; sound there starts the call, and the first words are not lost', async () => {
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectReady(client);
+    expect(client.getState().watch).toMatchObject({ enabled: true, status: 'listening' });
+    expect(audio.captures).toHaveLength(1);
+    expect(audio.captures[0]!.options).toMatchObject({ deviceId: 'cable-a', processing: false });
+
+    // Line noise does not start anything.
+    feed(audio.captures[0]!, quiet, 100);
+    await flush();
+    expect(ws.messages()).toEqual([]);
+
+    // A short ding (a notification) does not either.
+    feed(audio.captures[0]!, loud, 20);
+    feed(audio.captures[0]!, quiet, 80);
+    await flush();
+    expect(ws.messages()).toEqual([]);
+
+    // A ring or a voice for more than half a second does.
+    feed(audio.captures[0]!, loud, 30);
+    await flush();
+    expect(ws.messages()).toEqual([{ type: 'call.startLocal', label: 'WhatsApp' }]);
+    expect(audio.cablePlaybacks).toHaveLength(1);
+    expect(audio.cablePlaybacks[0]!.sink).toBe('cable-b');
+    expect(client.getState().watch.status).toBe('starting');
+    feed(audio.captures[0]!, loud, 5);
+
+    ws.receive(activeLocalCall());
+    await flush();
+    expect(client.getState().watch.status).toBe('in_call');
+    // The same capture now feeds the call, beginning with what was said while it entered.
+    const sent = ws.framesOf(AudioFrameType.PassengerLocal).length;
+    expect(sent).toBeGreaterThanOrEqual(35);
+    feed(audio.captures[0]!, loud, 3);
+    expect(ws.framesOf(AudioFrameType.PassengerLocal)).toHaveLength(sent + 3);
+    expect(audio.captures).toHaveLength(1);
+  });
+
+  it('after a call it waits for a quiet cable before listening again, so a call still going on in WhatsApp does not re-enter', async () => {
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectReady(client);
+    feed(audio.captures[0]!, loud, 30);
+    await flush();
+    ws.receive(activeLocalCall());
+    await flush();
+    ws.receive({ type: 'call.ended', callId: 'l1', reason: 'hangup_operator', durationMs: 1000 });
+    await flush();
+    expect(audio.captureStops).toBe(1);
+    expect(audio.captures).toHaveLength(2);
+    expect(client.getState().watch.status).toBe('arming');
+    ws.sent.length = 0;
+
+    feed(audio.captures[1]!, loud, 50);
+    await flush();
+    expect(ws.messages()).toEqual([]);
+    feed(audio.captures[1]!, quiet, 130);
+    await flush();
+    expect(client.getState().watch.status).toBe('listening');
+    feed(audio.captures[1]!, loud, 30);
+    await flush();
+    expect(ws.messages()).toEqual([{ type: 'call.startLocal', label: 'WhatsApp' }]);
+  });
+
+  it('can be turned off, says when the cables are missing, and releases everything when the server refuses', async () => {
+    const client = setup();
+    await connectReady(client);
+    expect(client.getState().watch.status).toBe('needs_setup');
+    expect(audio.captures).toHaveLength(0);
+
+    setCablePrefs();
+    client.actions.refreshAudioPrefs!();
+    await flush();
+    expect(client.getState().watch.status).toBe('listening');
+    client.actions.setAutoWhatsapp!(false);
+    await flush();
+    expect(client.getState().watch).toMatchObject({ enabled: false, status: 'off' });
+    expect(audio.captureStops).toBe(1);
+    expect(window.localStorage.getItem(AUDIO_PREF_KEYS.autoWhatsapp)).toBe('0');
+
+    client.actions.setAutoWhatsapp!(true);
+    await flush();
+    feed(audio.captures[1]!, loud, 30);
+    await flush();
+    socket().receive({ type: 'error', code: 'max_calls_reached', message: 'Todas las líneas están ocupadas' });
+    await flush();
+    expect(audio.cablePlaybacks[0]!.stops).toBe(1);
+    expect(client.getState().watch.status).toBe('arming');
+  });
+
+  it('closes a local call whose cable stayed silent, after a countdown the operator can cancel', async () => {
+    window.localStorage.setItem(AUDIO_PREF_KEYS.autoEndSeconds, '20');
+    setCablePrefs();
+    const client = setup();
+    const ws = await connectReady(client);
+    feed(audio.captures[0]!, loud, 30);
+    await flush();
+    ws.receive(activeLocalCall());
+    await flush();
+    ws.sent.length = 0;
+
+    feed(audio.captures[0]!, quiet, 1000);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.getState().call!.autoEndAt).toBe(nowMs + 10_000);
+    client.actions.keepCall!();
+    expect(client.getState().call!.autoEndAt).toBeNull();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.getState().call!.autoEndAt).toBeNull();
+
+    // Voice during the countdown cancels it too.
+    feed(audio.captures[0]!, quiet, 1000);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.getState().call!.autoEndAt).not.toBeNull();
+    feed(audio.captures[0]!, loud, 1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.getState().call!.autoEndAt).toBeNull();
+
+    feed(audio.captures[0]!, quiet, 1000);
+    await vi.advanceTimersByTimeAsync(100);
+    nowMs += 10_000;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ws.messages()).toEqual([{ type: 'call.hangup', callId: 'l1' }]);
   });
 });
 

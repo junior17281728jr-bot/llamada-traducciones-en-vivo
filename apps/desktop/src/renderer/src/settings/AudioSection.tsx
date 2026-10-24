@@ -1,5 +1,53 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { readAudioPref, writeAudioPref, type AudioPrefKey } from '../core/audio-prefs';
+import { useCall } from '../core/CallContext';
+import { DEFAULT_AUTO_END_SECONDS } from '../core/whatsapp-watch';
+
+/** True on a Mac (cable names and steps differ from Windows). */
+export function isMacComputer(): boolean {
+  return typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent || navigator.platform || '');
+}
+
+const AUTO_END_CHOICES: [string, string][] = [
+  ['20', '20 segundos'],
+  ['30', '30 segundos'],
+  ['60', '1 minuto'],
+  ['120', '2 minutos'],
+  ['0', 'Nunca (la cierro yo)'],
+];
+
+/** How to connect WhatsApp to the two virtual cables, for this computer's system. */
+export function CableGuide({ mac }: { mac: boolean }) {
+  const a = mac ? 'BlackHole 2ch' : 'CABLE Input / CABLE Output';
+  const b = mac ? 'BlackHole 16ch' : 'CABLE-A Input / CABLE-A Output';
+  return (
+    <ol className="guide-steps" data-testid="cable-guide">
+      {mac ? (
+        <li>
+          Instala dos cables de audio gratuitos: <strong>BlackHole 2ch</strong> (cable A) y <strong>BlackHole 16ch</strong> (cable B), desde
+          existential.audio/blackhole. Reinicia si te lo pide.
+        </li>
+      ) : (
+        <li>
+          Instala dos cables de audio: <strong>VB-CABLE</strong> (cable A) y <strong>VB-CABLE A+B</strong> (cable B), desde vb-audio.com/Cable. Reinicia
+          el ordenador.
+        </li>
+      )}
+      <li>
+        En <strong>WhatsApp</strong> (Ajustes &gt; Llamadas, o durante una llamada en el menú de audio): <strong>Altavoz</strong> ={' '}
+        {mac ? 'BlackHole 2ch' : 'CABLE Input'} y <strong>Micrófono</strong> = {mac ? 'BlackHole 16ch' : 'CABLE-A Output'}.
+      </li>
+      <li>
+        Aquí abajo: <strong>Voz de WhatsApp</strong> = {mac ? 'BlackHole 2ch' : 'CABLE Output'} y <strong>Hacia el micrófono de WhatsApp</strong> ={' '}
+        {mac ? 'BlackHole 16ch' : 'CABLE-A Input'}.
+      </li>
+      <li>Tu micrófono y tus auriculares de siempre siguen arriba. Usa auriculares.</li>
+      <li className="muted small">
+        Cable A: {a}. Cable B: {b}. La primera vez, haz una llamada corta con alguien de confianza para comprobar que os oís.
+      </li>
+    </ol>
+  );
+}
 
 type DeviceSupport = 'checking' | 'ok' | 'unsupported';
 
@@ -65,7 +113,9 @@ function readVolume(): number {
  * promises what the browser APIs report and says the default output is used when selection is unsupported.
  */
 export function AudioSection() {
-  const ids = { input: useId(), output: useId(), volume: useId(), pin: useId(), pout: useId() };
+  const { state, actions } = useCall();
+  const ids = { input: useId(), output: useId(), volume: useId(), pin: useId(), pout: useId(), auto: useId(), end: useId() };
+  const mac = isMacComputer();
   const [support, setSupport] = useState<DeviceSupport>('checking');
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [permissionNeeded, setPermissionNeeded] = useState(false);
@@ -76,6 +126,8 @@ export function AudioSection() {
     volume: String(readVolume()),
     passengerInput: readAudioPref('passengerInput') ?? '',
     passengerOutput: readAudioPref('passengerOutput') ?? '',
+    autoWhatsapp: readAudioPref('autoWhatsapp') === '0' ? '0' : '1',
+    autoEndSeconds: readAudioPref('autoEndSeconds') ?? String(DEFAULT_AUTO_END_SECONDS),
   }));
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -116,8 +168,11 @@ export function AudioSection() {
   }
 
   function update(key: AudioPrefKey, value: string): void {
-    writeAudioPref(key, value);
+    if (key === 'autoWhatsapp') actions.setAutoWhatsapp?.(value !== '0');
+    else writeAudioPref(key, value);
     setPrefs((current) => ({ ...current, [key]: value }));
+    // The automatic entry listens to cable A: it re-reads the devices at once.
+    if (key === 'passengerInput' || key === 'passengerOutput') actions.refreshAudioPrefs?.();
   }
 
   const volumePercent = Math.round(Number(prefs.volume) * 100);
@@ -127,7 +182,7 @@ export function AudioSection() {
       <header className="card__header">
         <div>
           <h2 className="card__title" id="audio-title">
-            Audio
+            Audio y WhatsApp
           </h2>
           <p className="card__subtitle">Se guarda en este ordenador y se aplica a partir de la próxima llamada.</p>
         </div>
@@ -195,34 +250,67 @@ export function AudioSection() {
       </div>
 
       <div className="stack stack--tight" data-testid="pc-audio-mode">
-        <h3 className="section-title">Modo audio del PC</h3>
+        <h3 className="section-title">WhatsApp en este ordenador</h3>
         <p className="muted small">
-          Para traducir una llamada que ya tienes en otro programa (por ejemplo WhatsApp Desktop) hacen falta dos cables de audio virtuales: uno trae la voz del
-          pasajero desde ese programa hasta Telecomway y otro lleva tu voz traducida hasta el micrófono de ese programa. Cómo instalarlos y configurarlos:{' '}
-          <code>docs/MODO-AUDIO-PC.md</code>.
+          Contestas y llamas en WhatsApp como siempre. Dos cables de audio virtuales llevan su sonido a Telecomway y tu voz traducida de vuelta a WhatsApp.
         </p>
+        <details className="guide" open={!prefs.passengerInput || !prefs.passengerOutput}>
+          <summary>Cómo conectar WhatsApp ({mac ? 'Mac' : 'Windows'}, unos 5 minutos)</summary>
+          <CableGuide mac={mac} />
+        </details>
         <div className="form-grid">
           <DeviceSelect
             id={ids.pin}
-            label="Entrada con la voz del pasajero"
+            label="Voz de WhatsApp (cable A)"
             prefKey="passengerInput"
             kind="audioinput"
             devices={devices}
             value={prefs.passengerInput}
-            hint="El cable virtual que recibe la salida de audio del otro programa."
+            hint={mac ? 'Elige BlackHole 2ch.' : 'Elige CABLE Output.'}
             onChange={update}
           />
           <DeviceSelect
             id={ids.pout}
-            label="Salida hacia el micrófono del otro programa"
+            label="Hacia el micrófono de WhatsApp (cable B)"
             prefKey="passengerOutput"
             kind="audiooutput"
             devices={devices}
             value={prefs.passengerOutput}
-            hint="El cable virtual que el otro programa usa como micrófono; aquí se reproduce tu voz traducida."
+            hint={mac ? 'Elige BlackHole 16ch.' : 'Elige CABLE-A Input.'}
             onChange={update}
           />
         </div>
+        <div className="switch-list">
+          <label className="switch" htmlFor={ids.auto}>
+            <input
+              id={ids.auto}
+              type="checkbox"
+              role="switch"
+              checked={prefs.autoWhatsapp !== '0'}
+              onChange={(event) => update('autoWhatsapp', event.target.checked ? '1' : '0')}
+              data-testid="auto-whatsapp-switch"
+            />
+            <span className="switch__track" aria-hidden="true" />
+            <span className="switch__text">
+              <strong>Entrada automática de llamadas de WhatsApp</strong>
+              <span className="muted small">
+                Cuando WhatsApp suena o alguien habla por el cable A, la llamada entra sola aquí y empieza a traducirse.
+                {state.watch.status === 'listening' ? ' Ahora mismo está escuchando.' : ''}
+              </span>
+            </span>
+          </label>
+        </div>
+        <label className="field field--inline" htmlFor={ids.end}>
+          <span className="field__label">Cerrar la traducción si WhatsApp queda en silencio durante</span>
+          <select id={ids.end} value={prefs.autoEndSeconds} onChange={(event) => update('autoEndSeconds', event.target.value)} data-testid="auto-end-select">
+            {AUTO_END_CHOICES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <span className="field__hint">Antes de cerrarla, la app avisa 10 segundos con un botón «Sigo en la llamada».</span>
+        </label>
       </div>
     </section>
   );

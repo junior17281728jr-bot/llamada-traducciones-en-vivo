@@ -15,6 +15,8 @@ interface ServiceKeys {
   service: TestService;
   title: string;
   description: string;
+  /** Where to get the key, in plain words. */
+  help?: string;
   fields: KeyField[];
 }
 
@@ -22,13 +24,15 @@ export const SERVICE_KEYS: ServiceKeys[] = [
   {
     service: 'elevenlabs',
     title: 'ElevenLabs',
-    description: 'Voz a texto y texto a voz.',
+    description: 'Escucha y habla (voz a texto y texto a voz).',
+    help: 'Consíguela en elevenlabs.io: entra en tu cuenta > Developers > API Keys > Create. Dale permiso de voz a texto y texto a voz.',
     fields: [{ name: 'ELEVENLABS_API_KEY', label: 'Clave de API' }],
   },
   {
     service: 'anthropic',
     title: 'Anthropic',
-    description: 'Traductor (Claude).',
+    description: 'Traduce (Claude).',
+    help: 'Consíguela en console.anthropic.com: API Keys > Create Key. Necesita saldo en la cuenta.',
     fields: [{ name: 'ANTHROPIC_API_KEY', label: 'Clave de API' }],
   },
   {
@@ -100,7 +104,8 @@ function TestResultView({ state }: TestResultViewProps) {
  * server only returns a mask (last 4 characters and date). "Guardar" sends the filled fields only;
  * "Borrar" sends an explicit null for one key.
  */
-export function KeysSection() {
+export function KeysSection({ services }: { services?: readonly TestService[] } = {}) {
+  const groups = services ? SERVICE_KEYS.filter((group) => services.includes(group.service)) : SERVICE_KEYS;
   const [masks, setMasks] = useState<KeysResponse['keys'] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Partial<Record<SecretKeyName, string>>>({});
@@ -203,13 +208,14 @@ export function KeysSection() {
         }}
         autoComplete="off"
       >
-        {SERVICE_KEYS.map((group) => {
+        {groups.map((group) => {
           const testState = tests[group.service];
           return (
             <fieldset key={group.service} className="fieldset stack stack--tight" data-testid={`keys-${group.service}`}>
               <legend>
                 {group.title} · {group.description}
               </legend>
+              {group.help ? <p className="muted small key-help">{group.help}</p> : null}
               <div className="form-grid">
                 {group.fields.map((field) => {
                   const mask = masks?.[field.name];
